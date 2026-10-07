@@ -1,0 +1,44 @@
+# قوانین پروژه YUMA (یوما)
+
+## هویت پروژه
+YUMA یک سامانه خشکشویی آنلاین ایرانی است. Monorepo با pnpm + Turborepo و شامل:
+`apps/api` (NestJS)، `apps/admin` و `apps/laundry` (Next.js)،
+`apps/customer-app` و `apps/driver-app` (React Native + Expo)،
+و `packages/{persian,validators,types,config,db,ui}`.
+
+## قوانین ثابت (تخطی‌ناپذیر)
+1. **همه متن‌های رابط کاربری فارسی هستند.** هیچ رشته انگلیسی در UI، پیام خطا، پیامک یا ایمیل نوشته نشود.
+2. **جهت همه‌چیز RTL است.** در وب `dir="rtl"` و `lang="fa"`؛ در React Native، `I18nManager.forceRTL(true)`.
+3. **همه اعداد نمایشی فارسی هستند.** برای نمایش از `toPersianDigits` یا `formatCurrency`/`formatDecimal` استفاده کن، نه `toLocaleString`.
+4. **همه تاریخ‌های نمایشی هجری شمسی هستند.** از `formatJalaliDate` استفاده کن. ذخیره‌سازی در دیتابیس همیشه میلادی ISO است.
+5. **واحد پول: تومان برای نمایش، ریال برای ذخیره‌سازی.** مبالغ در دیتابیس همیشه `Int` به ریال هستند (بدون اعشار). تبدیل: `toToman = rial / 10`.
+6. **منطقه زمانی: `Asia/Tehran`، لوکال: `fa-IR`.**
+7. **اعتبارسنجی ایرانی فقط از `@yuma/validators`.** اسکیماهای موبایل/کد ملی/کد پستی/شبنم (IBAN) را از نو ننویس.
+8. **هیچ مقدار محرمانه‌ای در کد نیست.** همه از طریق `.env` و `config` (در NestJS: `@nestjs/config`) خوانده شود.
+
+## معماری
+- کد مشترک را در `packages/*` بگذار، نه در دو اپ به‌صورت کپی‌شده.
+- منطق دامنه در `apps/api/src/<domain>/` با لایه‌های `controller` / `service` / `repository` تفکیک شود.
+- DTOها با `class-validator` و پیام فارسی (از `common/messages.fa.ts`) نوشته شوند.
+- هرگز `env()` یا `process.env` را مستقیم داخل منطق دامنه نخوان؛ از config استفاده کن.
+
+## کیفیت
+- TypeScript `strict` است؛ `any` ممنوع (در صورت نیاز `unknown` + narrowing).
+- برای هر تابع بومی‌سازی در `packages/persian` و هر اسکیما در `packages/validators` تست وجود داشته باشد.
+- نام فایل‌ها: کامپوننت‌ها PascalCase، ماژول‌ها kebab-case یا camelCase طبق عرف همان اپ.
+- پیش از هر commit: `pnpm lint && pnpm test`.
+
+## فرمان‌های مفید
+```bash
+pnpm install            # نصب همه وابستگی‌ها
+pnpm dev                # اجرای همه سرویس‌ها با Turborepo
+pnpm --filter @yuma/api dev
+pnpm --filter @yuma/persian test
+pnpm db:generate && pnpm db:push && pnpm db:seed
+docker compose up -d postgres redis mailhog
+```
+
+## نکات دامنه
+- چرخه وضعیت سفارش در `@yuma/types` (`ORDER_STATUS_FLOW`) تعریف شده؛ انتقال‌ها را از همان تبعیت کن.
+- تعطیلات رسمی ایران را از تنظیمات بگیر، نه hardcode.
+- روز کاری پیش‌فرض: شنبه تا چهارشنبه (پنجشنبه اختیاری، جمعه تعطیل).

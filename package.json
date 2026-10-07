@@ -1,0 +1,31 @@
+{
+  "name": "yuma",
+  "private": true,
+  "packageManager": "pnpm@10.30.2",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "format": "prettier --write \"**/*.{ts,tsx,md,json,yml}\"",
+    "db:up": "docker compose up -d postgres redis mailhog",
+    "db:down": "docker compose down",
+    "db:generate": "pnpm --filter @yuma/db generate",
+    "db:migrate": "pnpm --filter @yuma/db migrate",
+    "db:push": "pnpm --filter @yuma/db push",
+    "db:seed": "pnpm --filter @yuma/db seed",
+    "api:dev": "pnpm --filter @yuma/api dev",
+    "admin:dev": "pnpm --filter @yuma/admin dev",
+    "laundry:dev": "pnpm --filter @yuma/laundry dev",
+    "customer:dev": "pnpm --filter @yuma/customer-app start",
+    "driver:dev": "pnpm --filter @yuma/driver-app start"
+  },
+  "devDependencies": {
+    "prettier": "^3.3.3",
+    "turbo": "^2.3.3",
+    "typescript": "^5.6.3"
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "name": "@yuma/validators",
+  "version": "0.1.0",
+  "description": "اعتبارسنجی مقادیر ایرانی: موبایل، کد ملی، کد پستی، شبا، نام و متن فارسی",
+  "license": "MIT",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@yuma/persian": "workspace:*",
+    "zod": "^4.1.5"
+  },
+  "devDependencies": {
+    "tsup": "^8.3.0",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.4"
+  }
+}

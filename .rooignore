@@ -1,0 +1,30 @@
+﻿# Dependencies
+**/node_modules/
+**/.pnpm-store/
+
+# Build outputs
+**/dist/
+**/build/
+**/.next/
+**/.expo/
+**/.turbo/
+**/out/
+*.tsbuildinfo
+
+# Database & Docker volumes
+postgres_data/
+redis_data/
+minio_data/
+
+# Testing & Logs
+**/coverage/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# iOS & Android native builds
+apps/*/android/
+apps/*/ios/
+
+# Git
+.git/

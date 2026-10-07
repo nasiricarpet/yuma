@@ -1,0 +1,38 @@
+{
+  "expo": {
+    "name": "یوما راننده",
+    "slug": "yuma-driver",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "yumadriver",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "extra": {
+      "supportsRTL": true,
+      "forcesRTL": true
+    },
+    "plugins": [
+      "expo-router",
+      "expo-font",
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "برای مسیریابی و ثبت موقعیت تحویل، دسترسی به موقعیت مکانی لازم است."
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "android": {
+      "package": "ir.yuma.driver",
+      "permissions": ["ACCESS_FINE_LOCATION", "ACCESS_COARSE_LOCATION"]
+    },
+    "ios": {
+      "bundleIdentifier": "ir.yuma.driver",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "برای مسیریابی و ثبت موقعیت تحویل، دسترسی به موقعیت مکانی لازم است."
+      }
+    }
+  }
+}

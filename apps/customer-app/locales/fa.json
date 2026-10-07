@@ -1,0 +1,29 @@
+{
+  "app": {
+    "name": "یوما"
+  },
+  "home": {
+    "greeting": "سلام {{name}} 👋",
+    "subtitle": "سفارش خشکشویی‌ات را در چند ثانیه ثبت کن",
+    "newOrder": "ثبت سفارش جدید",
+    "activeOrders": "سفارش‌های فعال",
+    "empty": "هنوز سفارشی نداری"
+  },
+  "order": {
+    "status": {
+      "pending": "در انتظار تأیید",
+      "in_progress": "در حال شست‌وشو",
+      "ready": "آماده تحویل",
+      "delivered": "تحویل شد"
+    },
+    "createdAt": "تاریخ ثبت",
+    "price": "مبلغ",
+    "trackingCode": "کد پیگیری"
+  },
+  "common": {
+    "toman": "تومان",
+    "retry": "تلاش دوباره",
+    "loading": "در حال بارگذاری…",
+    "networkError": "ارتباط با سرور برقرار نشد"
+  }
+}

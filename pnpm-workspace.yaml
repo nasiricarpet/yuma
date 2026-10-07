@@ -1,0 +1,15 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+
+# پکیج‌هایی که اجازه اجرای postinstall دارند (pnpm 10 اسکریپت‌ها را پیش‌فرض مسدود می‌کند)
+onlyBuiltDependencies:
+  - esbuild
+  - "@swc/core"
+  - "@prisma/client"
+  - "@prisma/engines"
+  - prisma
+  - core-js
+  - sharp
+  - "@tailwindcss/oxide"
+  - unrs-resolver

@@ -1,0 +1,38 @@
+# وابستگی‌ها
+node_modules/
+.pnpm-store/
+
+# خروجی build
+dist/
+.next/
+out/
+build/
+*.tsbuildinfo
+
+# Expo / React Native
+.expo/
+*.log
+ios/
+android/
+
+# محیط
+.env
+.env.local
+.env.*.local
+
+# Prisma
+packages/db/prisma/*.db
+
+# تست و کاورج
+coverage/
+.vitest-cache/
+
+# IDE و سیستم
+.DS_Store
+.idea/
+*.swp
+.turbo/
+
+# لاگ‌ها
+npm-debug.log*
+pnpm-debug.log*

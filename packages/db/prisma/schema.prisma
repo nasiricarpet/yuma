@@ -1,0 +1,297 @@
+// YUMA — اسکیمای اولیه Prisma
+// PostgreSQL 16 — ذخیره مبلغ به ریال (IRR)، نمایش به تومان
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  admin
+  laundry_manager
+  laundry_user
+  driver
+  customer
+}
+
+enum OrderStatus {
+  pending
+  assigned
+  picked_up
+  at_laundry
+  quotation_sent
+  quotation_approved
+  washing
+  quality_check
+  ready
+  out_for_delivery
+  delivered
+  cancelled
+}
+
+enum VehicleType {
+  motorcycle
+  car
+  van
+}
+
+model User {
+  id           String    @id @default(uuid())
+  mobile       String    @unique // فرمت نرمال: 09xxxxxxxxx
+  fullName     String
+  nationalCode String?   @unique
+  passwordHash String
+  role         UserRole  @default(customer)
+  isActive     Boolean   @default(true)
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  ownedLaundries Laundry[]       @relation("LaundryOwner")
+  driverProfile  Driver?
+  customerOrders Order[]         @relation("CustomerOrders")
+  refreshTokens  RefreshToken[]
+  addresses      UserAddress[]
+
+  @@map("users")
+}
+
+model UserAddress {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  title       String
+  province    String
+  city        String
+  fullAddress String   @map("full_address")
+  postalCode  String   @map("postal_code")
+  lat         Decimal? @db.Decimal(9, 6)
+  lng         Decimal? @db.Decimal(9, 6)
+  isDefault   Boolean  @default(false) @map("is_default")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("user_addresses")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  tokenHash String   @unique @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+model Laundry {
+  id        String   @id @default(uuid())
+  name      String
+  ownerId   String   @map("owner_id")
+  city      String
+  address   String
+  phone     String?
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  owner    User        @relation("LaundryOwner", fields: [ownerId], references: [id])
+  orders   Order[]
+  services LaundryService[]
+
+  @@map("laundries")
+}
+
+model LaundryService {
+  id         String  @id @default(uuid())
+  laundryId  String  @map("laundry_id")
+  name       String
+  /** قیمت واحد به ریال */
+  unitPrice  Int     @map("unit_price")
+  /** واحد شمارش: عدد، متر مربع، کیلوگرم */
+  unit       String  @default("count")
+  isActive   Boolean @default(true) @map("is_active")
+
+  laundry     Laundry     @relation(fields: [laundryId], references: [id], onDelete: Cascade)
+  orderItems  OrderItem[]
+
+  @@index([laundryId])
+  @@map("laundry_services")
+}
+
+model Driver {
+  id          String      @id @default(uuid())
+  userId      String      @unique @map("user_id")
+  vehicleType VehicleType @default(motorcycle) @map("vehicle_type")
+  plateNumber String?     @map("plate_number")
+  isActive    Boolean     @default(true) @map("is_active")
+  createdAt   DateTime    @default(now()) @map("created_at")
+
+  user            User                @relation(fields: [userId], references: [id])
+  assignedOrders  Order[]             @relation("DriverOrders")
+  driverLocations DriverLocationLog[]
+  assignments     Assignment[]
+
+  @@map("drivers")
+}
+
+model DriverLocationLog {
+  id        String   @id @default(uuid())
+  driverId  String   @map("driver_id")
+  latitude  Decimal  @db.Decimal(9, 6)
+  longitude Decimal  @db.Decimal(9, 6)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  driver Driver @relation(fields: [driverId], references: [id], onDelete: Cascade)
+
+  @@index([driverId, createdAt])
+  @@map("driver_location_logs")
+}
+
+model Order {
+  id           String      @id @default(uuid())
+  trackingCode String      @unique @map("tracking_code") // کد ۶ رقمی
+  customerId   String      @map("customer_id")
+  laundryId    String?     @map("laundry_id")
+  driverId     String?     @map("driver_id")
+  status       OrderStatus @default(pending)
+
+  // آدرس
+  province    String
+  city        String
+  postalCode  String  @map("postal_code")
+  fullAddress String  @map("full_address")
+  latitude    Decimal? @db.Decimal(9, 6)
+  longitude   Decimal? @db.Decimal(9, 6)
+
+  /** جمع کل به ریال */
+  totalAmount       Int    @default(0) @map("total_amount")
+  currency          String @default("IRR")
+  description       String?
+  pickupTimeSlot    String? @map("pickup_time_slot")
+  deliveryTimeSlot  String? @map("delivery_time_slot")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  customer   User            @relation("CustomerOrders", fields: [customerId], references: [id])
+  laundry    Laundry?        @relation(fields: [laundryId], references: [id])
+  driver     Driver?         @relation("DriverOrders", fields: [driverId], references: [id])
+  items      OrderItem[]
+  statusHistory OrderStatusHistory[]
+  assignments   Assignment[]
+  media         OrderMedia[]
+  quotation     Quotation?
+  payments      Payment[]
+
+  @@index([customerId])
+  @@index([laundryId, status])
+  @@index([driverId, status])
+  @@map("orders")
+}
+
+model OrderItem {
+  id        String @id @default(uuid())
+  orderId   String @map("order_id")
+  serviceId String @map("service_id")
+  quantity  Int    @default(1)
+  areaSqm   Decimal? @map("area_sqm") @db.Decimal(8, 2)
+  /** قیمت واحد در لحظه سفارش (ریال) */
+  unitPrice Int    @map("unit_price")
+
+  order   Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  service LaundryService @relation(fields: [serviceId], references: [id])
+
+  @@index([orderId])
+  @@map("order_items")
+}
+
+model OrderStatusHistory {
+  id        String      @id @default(uuid())
+  orderId   String      @map("order_id")
+  status    OrderStatus
+  note      String?
+  actorId   String?     @map("actor_id")
+  /** نقش کاربری که این تغییر وضعیت را انجام داده است */
+  actorRole String?     @map("actor_role")
+  createdAt DateTime    @default(now()) @map("created_at")
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, createdAt])
+  @@map("order_status_history")
+}
+
+model OrderMedia {
+  id        String   @id @default(uuid())
+  orderId   String   @map("order_id")
+  fileUrl   String   @map("file_url")
+  fileName  String   @map("file_name")
+  mimeType  String   @map("mime_type")
+  sizeBytes Int      @map("size_bytes")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@map("order_media")
+}
+
+model Assignment {
+  id        String   @id @default(uuid())
+  orderId   String   @map("order_id")
+  driverId  String   @map("driver_id")
+  phase     String   // pickup | delivery
+  status    String   @default("pending") // pending | accepted | done | failed
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  order  Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  driver Driver @relation(fields: [driverId], references: [id])
+
+  @@index([driverId, status])
+  @@map("assignments")
+}
+
+model Quotation {
+  id             String    @id @default(uuid())
+  orderId        String    @unique @map("order_id")
+  subtotalAmount Int       @map("subtotal_amount")
+  deliveryFee    Int       @default(0) @map("delivery_fee")
+  taxAmount      Int       @default(0) @map("tax_amount")
+  totalAmount    Int       @map("total_amount")
+  status         String    @default("draft") // draft | sent | approved | rejected
+  expiresAt      DateTime? @map("expires_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@map("quotations")
+}
+
+model Payment {
+  id          String   @id @default(uuid())
+  orderId     String   @map("order_id")
+  customerId  String   @map("customer_id")
+  amount      Int
+  authority   String?  @unique
+  referenceId String?  @map("reference_id")
+  status      String   @default("pending") // pending | success | failed
+  method      String   @default("online")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@map("payments")
+}

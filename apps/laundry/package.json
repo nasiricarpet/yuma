@@ -1,0 +1,35 @@
+{
+  "name": "@yuma/laundry",
+  "version": "0.1.0",
+  "private": true,
+  "description": "پنل خشکشویی‌ها — Next.js با RTL و تقویم شمسی",
+  "scripts": {
+    "dev": "next dev --port 3003",
+    "build": "next build",
+    "start": "next start --port 3003",
+    "lint": "next lint",
+    "test": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@yuma/config": "workspace:*",
+    "@yuma/persian": "workspace:*",
+    "@yuma/types": "workspace:*",
+    "@yuma/ui": "workspace:*",
+    "@yuma/validators": "workspace:*",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.468.0",
+    "next": "^15.1.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tailwind-merge": "^2.5.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.6.3"
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "expo": {
+    "name": "یوما",
+    "slug": "yuma-customer",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "yuma",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "locales": {
+      "fa": "./locales/fa.json"
+    },
+    "extra": {
+      "supportsRTL": true,
+      "forcesRTL": true
+    },
+    "plugins": ["expo-router", "expo-font"],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "android": {
+      "package": "ir.yuma.customer",
+      "adaptiveIcon": {
+        "backgroundColor": "#0f766e"
+      }
+    },
+    "ios": {
+      "bundleIdentifier": "ir.yuma.customer",
+      "supportsTablet": true
+    }
+  }
+}
