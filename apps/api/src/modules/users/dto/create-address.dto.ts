@@ -6,23 +6,23 @@ import { IsPostalCode, NormalizePostalCode } from '../../../common/validators';
  */
 export class CreateAddressDto {
   /** عنوان آدرس — خانه، محل کار و... */
-  @IsString()
-  @IsNotEmpty()
+  @IsString({ message: 'عنوان آدرس باید متن باشد' })
+  @IsNotEmpty({ message: 'عنوان آدرس الزامی است' })
   title!: string;
 
   /** استان */
-  @IsString()
-  @IsNotEmpty()
+  @IsString({ message: 'استان باید متن باشد' })
+  @IsNotEmpty({ message: 'استان الزامی است' })
   province!: string;
 
   /** شهر */
-  @IsString()
-  @IsNotEmpty()
+  @IsString({ message: 'شهر باید متن باشد' })
+  @IsNotEmpty({ message: 'شهر الزامی است' })
   city!: string;
 
   /** آدرس کامل */
-  @IsString()
-  @IsNotEmpty()
+  @IsString({ message: 'آدرس کامل باید متن باشد' })
+  @IsNotEmpty({ message: 'آدرس کامل الزامی است' })
   fullAddress!: string;
 
   /** کد پستی — ۱۰ رقم با ارقام انگلیسی نرمال‌شده */

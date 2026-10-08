@@ -1,4 +1,4 @@
-import { IsOptional } from 'class-validator';
+import { IsEmail, IsOptional } from 'class-validator';
 import {
   IsNationalCode,
   IsPersianName,
@@ -8,7 +8,7 @@ import {
 
 /**
  * به‌روزرسانی پروفایل کاربر
- * هر دو فیلد اختیاری هستند — فقط مقادیر ارسال‌شده به‌روز می‌شوند
+ * هر سه فیلد اختیاری هستند — فقط مقادیر ارسال‌شده به‌روز می‌شوند
  */
 export class UpdateProfileDto {
   /** نام و نام خانوادگی — فقط حروف فارسی */
@@ -17,7 +17,12 @@ export class UpdateProfileDto {
   @IsPersianName()
   fullName?: string;
 
-  /** کد ملی — ۱۰ رقم با ارقام انگلیسی نرمال‌شده */
+  /** ایمیل — اختیاری، در صورت ارسال باید معتبر باشد */
+  @IsOptional()
+  @IsEmail({}, { message: 'ایمیل واردشده معتبر نیست' })
+  email?: string;
+
+  /** کد ملی — ۱۰ رقم با ارقام انگلیسی نرمال‌شده و دارای رقم کنترل معتبر */
   @IsOptional()
   @NormalizeNationalCode()
   @IsNationalCode()
