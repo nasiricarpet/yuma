@@ -17,19 +17,32 @@ const redis = {
   },
 };
 
+/** شبیه‌سازی MailService — در تست‌ها چیزی ارسال نمی‌شود */
+const mail = {
+  sent: [] as Array<{ to: string; code: string }>,
+  async sendOtp(to: string, code: string): Promise<void> {
+    this.sent.push({ to, code });
+  },
+};
+
 describe('OtpService', () => {
   let service: OtpService;
 
   beforeEach(() => {
     redis.store.clear();
-    service = new OtpService(redis as never);
+    mail.sent.length = 0;
+    service = new OtpService(redis as never, mail as never);
   });
 
-  it('کد ۶ رقمی تولید و با انقضای ۱۲۰ ثانیه ذخیره می‌شود', async () => {
+  it('کد ۶ رقمی تولید و با انقضای ۶۰۰ ثانیه ذخیره می‌شود', async () => {
     const code = await service.request('0912-345 6789');
 
     expect(code).toMatch(/^\d{6}$/);
-    expect(redis.store.get('otp:09123456789')).toEqual({ value: code, ttl: 120 });
+    expect(redis.store.get('otp:09123456789')).toEqual({ value: code, ttl: 600 });
+    expect(mail.sent).toContainEqual({
+      to: '09123456789@yuma.local',
+      code,
+    });
   });
 
   it('موبایل فارسی‌شده نرمال می‌شود', async () => {

@@ -15,6 +15,7 @@ import { AssignmentsModule } from './modules/assignments/assignments.module';
 import { PricingModule } from './modules/pricing/pricing.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { PaymentModule } from './shared/payment/payment.module';
+import { MailModule } from './common/mail/mail.module';
 
 @Module({
   imports: [
@@ -40,6 +41,7 @@ import { PaymentModule } from './shared/payment/payment.module';
     PricingModule,
     PaymentsModule,
     PaymentModule,
+    MailModule,
   ],
   controllers: [AppController, HealthController],
   providers: [

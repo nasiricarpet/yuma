@@ -2,11 +2,15 @@
  * endpoints و توابع ارتباط با بک‌اند برای احراز هویت
  *
  * مسیرها نسبت به `NEXT_PUBLIC_API_URL` تعریف می‌شوند (به `lib/api/client.ts` مراجعه کنید):
- *  - POST {NEXT_PUBLIC_API_URL}/auth/otp/request  → ارسال کد یکتا
- *  - POST {NEXT_PUBLIC_API_URL}/auth/otp/verify   → تأیید کد و دریافت توکن
+ *  - POST {NEXT_PUBLIC_API_URL}/otp/request  → ارسال کد یکتا
+ *  - POST {NEXT_PUBLIC_API_URL}/otp/verify   → تأیید کد و دریافت توکن
+ *
+ * توجه: API خروجی `{ accessToken, refreshToken }` می‌دهد، در حالی که صفحه ورود
+ * انتظار `{ token, user }` دارد — `verifyOtp` این تبدیل را انجام می‌دهد.
  */
-import { apiPost } from '../client';
 import type { AdminUser } from '../../auth/types';
+import { apiGet, apiPost, TOKEN_KEY } from '../client';
+import { setStorage } from '@/lib/utils/storage';
 
 /** پاسخ موفق درخواست کد یکتا */
 export interface OtpRequestResponse {
@@ -29,15 +33,15 @@ export interface OtpVerifyResponse {
 
 export const authEndpoints = {
   /** ارسال کد یکتای موبایل */
-  sendOtp: '/auth/otp/request',
+  sendOtp: '/otp/request',
   /** درخواست کد یکتا (نام صریح) */
-  requestOtp: '/auth/otp/request',
+  requestOtp: '/otp/request',
   /** تأیید کد یکتا و دریافت توکن */
-  verifyOtp: '/auth/otp/verify',
+  verifyOtp: '/otp/verify',
   /** خروج از حساب */
-  logout: '/auth/logout',
+  logout: '/logout',
   /** پروفایل کاربر فعلی */
-  me: '/users/me',
+  me: '/me',
 } as const;
 
 /**
@@ -53,6 +57,9 @@ export async function requestOtp(mobile: string): Promise<OtpRequestResponse> {
 /**
  * تأیید کد یکتا و دریافت توکن نشست
  *
+ * خروجی API شامل `accessToken`/`refreshToken` است که در اینجا به شکل
+ * `{ token, user }` که صفحه ورود انتظار دارد تبدیل می‌شود.
+ *
  * @example
  * const { token, user } = await verifyOtp('09123456789', '123456');
  */
@@ -60,5 +67,28 @@ export async function verifyOtp(
   mobile: string,
   code: string,
 ): Promise<OtpVerifyResponse> {
-  return apiPost<OtpVerifyResponse>(authEndpoints.verifyOtp, { mobile, code });
+  const tokens = await apiPost<{
+    ok: boolean;
+    accessToken: string;
+    refreshToken: string;
+  }>(authEndpoints.verifyOtp, { mobile, code });
+
+  if (!tokens.accessToken) {
+    throw new Error('verify failed');
+  }
+
+  setStorage(TOKEN_KEY, tokens.accessToken);
+  setStorage('yuma-refresh-token', tokens.refreshToken);
+
+  const user = await apiGet<{
+    id: string;
+    mobile: string;
+    role: AdminUser['role'];
+    fullName?: string;
+  }>(authEndpoints.me);
+
+  return {
+    token: tokens.accessToken,
+    user,
+  };
 }

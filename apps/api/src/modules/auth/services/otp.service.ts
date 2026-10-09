@@ -6,10 +6,11 @@ import {
 } from '@nestjs/common';
 import { normalizeMobile } from '@yuma/validators';
 import { RedisService } from '../../../redis/redis.service';
+import { MailService } from '../../../common/mail/mail.service';
 import { faMessages } from '../../../common/messages.fa';
 
-/** اعتبار کد: ۲ دقیقه */
-const OTP_TTL_SECONDS = 120;
+/** اعتبار کد: ۱۰ دقیقه */
+const OTP_TTL_SECONDS = 600;
 /** طول کد: ۶ رقم */
 const OTP_LENGTH = 6;
 /** سقف درخواست در پنجره */
@@ -19,11 +20,14 @@ const RATE_LIMIT_WINDOW_SECONDS = 600;
 
 /**
  * سرویس OTP — تولید و بررسی کد تأیید موبایل
- * کد در Redis با انقضای ۲ دقیقه نگهداری می‌شود
+ * کد در Redis با انقضای ۱۰ دقیقه نگهداری می‌شود
  */
 @Injectable()
 export class OtpService {
-  constructor(private readonly redis: RedisService) {}
+  constructor(
+    private readonly redis: RedisService,
+    private readonly mail: MailService,
+  ) {}
 
   /** درخواست کد تأیید جدید؛ خروجی برای ارسال پیامک است */
   async request(mobile: string): Promise<string> {
@@ -32,6 +36,9 @@ export class OtpService {
 
     const code = this.generateCode();
     await this.redis.set(`otp:${normalized}`, code, OTP_TTL_SECONDS);
+
+    // ارسال کد (در dev فقط log می‌شود، در prod ایمیل/SMS)
+    await this.mail.sendOtp(`${normalized}@yuma.local`, code);
 
     return code;
   }
