@@ -3,6 +3,7 @@ import {
   ArrayMinSize,
   IsArray,
   IsInt,
+  IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
@@ -12,12 +13,17 @@ import {
 } from 'class-validator';
 import { IsPostalCode, NormalizePostalCode } from '../../../common/validators';
 
-/** آدرس برداشتی سفارش — مشتری هنگام ثبت، مقصد را مشخص می‌کند */
+/**
+ * آدرس سفارش — برای برداشت اجباری و برای تحویل اختیاری است.
+ * در صورت خالی بودن آدرس تحویل، تحویل در آدرس برداخت انجام می‌شود.
+ */
 export class OrderAddressDto {
   @IsString()
+  @IsNotEmpty()
   province!: string;
 
   @IsString()
+  @IsNotEmpty()
   city!: string;
 
   @NormalizePostalCode()
@@ -25,6 +31,7 @@ export class OrderAddressDto {
   postalCode!: string;
 
   @IsString()
+  @IsNotEmpty()
   fullAddress!: string;
 
   @IsOptional()
@@ -38,7 +45,7 @@ export class OrderAddressDto {
 
 /**
  * هر قلم خدمات سفارش — قیمت واحد از دیتابیس خوانده می‌شود،
- * بنابراین کلاینت آن را ارسال نمی‌کند
+ * بنابراین کلاینت آن را ارسال نمی‌کند.
  */
 export class OrderItemDto {
   /** شناسه خدمت قالیشویی */
@@ -58,34 +65,46 @@ export class OrderItemDto {
 }
 
 /**
- * ثبت سفارش جدید — مشتری، قالیشویی، آدرس برداشتی و اقلام خدمات
+ * ثبت سفارش جدید — مشتری، آدرس برداشت و اقلام خدمات
  *
- * توجه: `customerId` فعلاً به‌صورت فرضی در بدنه درخواست دریافت می‌شود و
- * در مرحله بعدی از توکن JWT استخراج خواهد شد.
+ * `idempotencyKey` برای جلوگیری از ثبت تکراری یک سفارش است:
+ * ارسال دوبارهٔ همان کلید، سفارش قبلی را برمی‌گرداند.
+ *
+ * `laundryId` اختیاری است؛ اگر ارسال نشود، سفارش بدون کارگاه ثبت می‌شود
+ * و ادمین بعداً با `assign-workshop` یک کارگاه به آن تخصیص می‌دهد.
+ * در آن صورت قیمت‌گذاری پس از ارزیابی کارگاه انجام می‌شود.
  */
 export class CreateOrderDto {
-  /** مشتری سفارش — موقتاً در بدنه، بعداً از توکن */
-  @IsUUID('4')
-  customerId!: string;
+  /** کلید یکتای جلوگیری از ثبت تکراری — الزامی */
+  @IsString()
+  @IsNotEmpty()
+  idempotencyKey!: string;
 
-  /** قالیشویی مقصد سفارش */
+  /** کارگاه مقصد — اختیاری؛ با ارسال نشدن، تخصیص دستی توسط ادمین لازم است */
+  @IsOptional()
   @IsUUID('4')
-  laundryId!: string;
+  laundryId?: string;
 
   /** توضیحات اختیاری مشتری درباره سفارش */
   @IsOptional()
   @IsString()
   description?: string;
 
-  /** بازه زمانی اختیاری برداشتی */
+  /** بازه زمانی اختیاری برداشت */
   @IsOptional()
   @IsString()
   pickupTimeSlot?: string;
 
-  /** آدرس محل برداشت فرش */
+  /** آدرس محل برداشت فرش — اجباری */
   @ValidateNested()
   @Type(() => OrderAddressDto)
-  address!: OrderAddressDto;
+  pickupAddress!: OrderAddressDto;
+
+  /** آدرس محل تحویل — اختیاری (پیش‌فرض: همان آدرس برداشت) */
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => OrderAddressDto)
+  deliveryAddress?: OrderAddressDto;
 
   /** اقلام سفارش — حداقل یک قلم الزامی است */
   @IsArray()

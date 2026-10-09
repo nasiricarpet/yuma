@@ -19,18 +19,30 @@ enum UserRole {
 }
 
 enum OrderStatus {
+  // جریان فعلی — ثبت تا بسته‌شدن
+  requested
+  awaiting_confirmation
+  awaiting_pickup
+  picked_up
+  awaiting_assessment
+  quoted
+  quote_approved
+  in_cleaning
+  quality_control
+  ready_for_delivery
+  out_for_delivery
+  delivered
+  closed
+  cancelled
+  // جریان قدیمی — ماژول‌های pricing/payments/assignments هنوز از این مقادیر استفاده می‌کنند
   pending
   assigned
-  picked_up
   at_laundry
   quotation_sent
   quotation_approved
   washing
   quality_check
   ready
-  out_for_delivery
-  delivered
-  cancelled
 }
 
 enum VehicleType {
@@ -161,19 +173,29 @@ model DriverLocationLog {
 
 model Order {
   id           String      @id @default(uuid())
-  trackingCode String      @unique @map("tracking_code") // کد ۶ رقمی
-  customerId   String      @map("customer_id")
-  laundryId    String?     @map("laundry_id")
-  driverId     String?     @map("driver_id")
-  status       OrderStatus @default(pending)
+  trackingCode    String      @unique @map("tracking_code") // کد پیگیری YUMA-XXXXXX
+  /** کلید یکتای جلوگیری از ثبت تکراری سفارش (idempotency) */
+  idempotencyKey  String?     @unique @map("idempotency_key")
+  customerId      String      @map("customer_id")
+  laundryId       String?     @map("laundry_id")
+  driverId        String?     @map("driver_id")
+  status          OrderStatus @default(requested)
 
-  // آدرس
+  // آدرس برداشت (اجباری)
   province    String
   city        String
   postalCode  String  @map("postal_code")
   fullAddress String  @map("full_address")
   latitude    Decimal? @db.Decimal(9, 6)
   longitude   Decimal? @db.Decimal(9, 6)
+
+  // آدرس تحویل (اختیاری — خالی باشد یعنی تحویل در آدرس برداخت)
+  deliveryProvince    String? @map("delivery_province")
+  deliveryCity        String? @map("delivery_city")
+  deliveryPostalCode  String?  @map("delivery_postal_code")
+  deliveryFullAddress String? @map("delivery_full_address")
+  deliveryLatitude    Decimal? @map("delivery_latitude") @db.Decimal(9, 6)
+  deliveryLongitude   Decimal? @map("delivery_longitude") @db.Decimal(9, 6)
 
   /** جمع کل به ریال */
   totalAmount       Int    @default(0) @map("total_amount")

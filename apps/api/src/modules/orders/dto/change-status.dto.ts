@@ -1,16 +1,18 @@
-import { IsIn, IsOptional, IsString } from 'class-validator';
-import { ORDER_STATUS_LABELS, OrderStatus } from '@yuma/types';
+import { IsIn, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { ORDER_FLOW_LABELS, type OrderFlowStatus } from '@yuma/types';
 
 /**
- * تغییر وضعیت سفارش توسط سفیر یا کارگاه
+ * تغییر وضعیت سفارش — وضعیت جدید باید در جریان اصلی مجاز باشد.
+ * برای انتقال‌هایی که `requiresNote` دارند، `note` اجباری است.
  */
 export class ChangeStatusDto {
-  /** وضعیت جدید — باید یکی از وضعیت‌های معتبر سفارش باشد */
-  @IsIn(Object.keys(ORDER_STATUS_LABELS))
-  toStatus!: OrderStatus;
+  /** وضعیت جدید — باید یکی از وضعیت‌های جریان اصلی باشد */
+  @IsIn(Object.keys(ORDER_FLOW_LABELS))
+  toStatus!: OrderFlowStatus;
 
-  /** یادداشت اختیاری درباره دلیل این تغییر وضعیت */
+  /** یادداشت درباره دلیل این تغییر وضعیت — برای برخی انتقال‌ها اجباری است */
   @IsOptional()
   @IsString()
+  @IsNotEmpty()
   note?: string;
 }

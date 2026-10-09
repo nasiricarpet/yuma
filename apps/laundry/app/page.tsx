@@ -1,3 +1,7 @@
+// این صفحه از کامپوننت‌های کلاینت (JalaliDatePicker با onChange) استفاده می‌کند،
+// پس خودش هم باید Client Component باشد.
+"use client";
+
 import { formatCurrency, formatJalaliDate, toPersianDigits } from '@yuma/persian';
 import { ORDER_STATUS_LABELS, type OrderStatus } from '@yuma/types';
 import { JalaliDatePicker } from '@yuma/ui';
@@ -13,7 +17,7 @@ interface QueueOrder {
 
 const queue: QueueOrder[] = [
   { code: 'YM-1042', customer: 'زهرا محمدی', items: 6, amountRial: 480_000, status: 'pending', pickupAt: '2026-09-30T08:15:00Z' },
-  { code: 'YM-1041', customer: 'علی رضایی', items: 3, amountRial: 1_250_000, status: 'in_progress', pickupAt: '2026-09-30T06:40:00Z' },
+  { code: 'YM-1041', customer: 'علی رضایی', items: 3, amountRial: 1_250_000, status: 'washing', pickupAt: '2026-09-30T06:40:00Z' },
 ];
 
 const toToman = (rial: number): number => Math.round(rial / 10);

@@ -22,6 +22,11 @@ export const faMessages = {
     invalidTransition: 'تغییر وضعیت سفارش در این مرحله امکان‌پذیر نیست',
     notCancellable: 'لغو سفارش در این مرحله امکان‌پذیر نیست',
     emptyItems: 'سفارش باید حداقل یک قلم خدمات داشته باشد',
+    reasonRequired: 'دلیل این تغییر وضعیت الزامی است',
+    notAssignedToWorkshop: 'این سفارش هنوز به کارگاه شما تخصیص نیافته است',
+    notAssignedToDriver: 'این سفارش به سفیر شما تخصیص نیافته است',
+    duplicateIdempotencyKey: 'سفارش با این کلید یکتا قبلاً ثبت شده است',
+    invalidStatus: 'وضعیت سفارش نامعتبر است',
   },
   laundry: {
     notFound: 'پروفایل قالیشویی شما یافت نشد',

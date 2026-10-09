@@ -23,6 +23,64 @@ export interface OrderStatusFlowItem {
   label: string;
 }
 
+/**
+ * جریان فعلی وضعیت‌های سفارش — منبع حقیقت در ماژول orders
+ *
+ * جریان قدیمی (`OrderStatus`) دست‌نخورده باقی می‌ماند زیرا ماژول‌های
+ * pricing/payments/assignments و اپ‌ها هنوز از آن مقادیر استفاده می‌کنند.
+ */
+export type OrderFlowStatus =
+  | 'requested' // ثبت‌شده توسط مشتری
+  | 'awaiting_confirmation' // در انتظار تأیید کارگاه
+  | 'awaiting_pickup' // تأیید شد، در انتظار سفیر
+  | 'picked_up' // سفیر از مشتری تحویل گرفت
+  | 'awaiting_assessment' // در کارگاه، در انتظار ارزیابی
+  | 'quoted' // برآورد قیمت ارسال شد
+  | 'quote_approved' // مشتری برآورد را تأیید کرد
+  | 'in_cleaning' // در حال شستشو
+  | 'quality_control' // کنترل کیفیت
+  | 'ready_for_delivery' // آماده تحویل
+  | 'out_for_delivery' // در مسیر تحویل
+  | 'delivered' // تحویل شد
+  | 'closed' // بسته شد
+  | 'cancelled'; // لغو شد
+
+export interface OrderFlowItem {
+  status: OrderFlowStatus;
+  label: string;
+}
+
+/** جریان اصلی وضعیت‌های سفارش (به ترتیب) */
+export const ORDER_FLOW: OrderFlowItem[] = [
+  { status: 'requested', label: 'ثبت‌شده' },
+  { status: 'awaiting_confirmation', label: 'در انتظار تأیید کارگاه' },
+  { status: 'awaiting_pickup', label: 'در انتظار سفیر' },
+  { status: 'picked_up', label: 'تحویل‌گرفته سفیر' },
+  { status: 'awaiting_assessment', label: 'در انتظار ارزیابی' },
+  { status: 'quoted', label: 'برآورد ارسال شد' },
+  { status: 'quote_approved', label: 'تأیید مشتری' },
+  { status: 'in_cleaning', label: 'در حال شستشو' },
+  { status: 'quality_control', label: 'کنترل کیفیت' },
+  { status: 'ready_for_delivery', label: 'آماده تحویل' },
+  { status: 'out_for_delivery', label: 'در مسیر تحویل' },
+  { status: 'delivered', label: 'تحویل‌شده' },
+  { status: 'closed', label: 'بسته‌شده' },
+  { status: 'cancelled', label: 'لغو‌شده' },
+];
+
+export const ORDER_FLOW_LABELS: Record<OrderFlowStatus, string> =
+  Object.fromEntries(ORDER_FLOW.map((s) => [s.status, s.label])) as Record<
+    OrderFlowStatus,
+    string
+  >;
+
+const ORDER_FLOW_STATUSES = new Set<string>(ORDER_FLOW.map((s) => s.status));
+
+/** نوع‌نگهبان وضعیت‌های جریان فعلی — مقادیر جریان قدیمی را رد می‌کند */
+export function isOrderFlowStatus(value: unknown): value is OrderFlowStatus {
+  return typeof value === 'string' && ORDER_FLOW_STATUSES.has(value);
+}
+
 /** جریان اصلی وضعیت‌های سفارش (به ترتیب) */
 export const ORDER_STATUS_FLOW: OrderStatusFlowItem[] = [
   { status: 'pending', label: 'ثبت‌شده' },
