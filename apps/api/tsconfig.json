@@ -15,13 +15,7 @@
     "strict": true,
     "strictNullChecks": true,
     "esModuleInterop": true,
-    "paths": {
-      "@yuma/persian": ["../../packages/persian/src/index.ts"],
-      "@yuma/validators": ["../../packages/validators/src/index.ts"],
-      "@yuma/types": ["../../packages/types/src/index.ts"],
-      "@yuma/config": ["../../packages/config/src/index.ts"],
-      "@yuma/db": ["../../packages/db/src/index.ts"]
-    }
+    "moduleResolution": "node"
   },
   "exclude": ["node_modules", "dist"]
 }

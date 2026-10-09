@@ -4,6 +4,7 @@ packages:
 
 # پکیج‌هایی که اجازه اجرای postinstall دارند (pnpm 10 اسکریپت‌ها را پیش‌فرض مسدود می‌کند)
 onlyBuiltDependencies:
+  - bcrypt
   - esbuild
   - "@swc/core"
   - "@prisma/client"

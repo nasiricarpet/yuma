@@ -2,6 +2,8 @@
  * تقویم جلالی (date picker) — React
  * شبکه ۷ ستونه: ش = شنبه ... ج = جمعه
  */
+"use client";
+
 import { useMemo, useState } from 'react';
 import {
   JALALI_MONTH_NAMES,
@@ -40,13 +42,17 @@ export function JalaliDatePicker({ value, onChange, defaultValue }: JalaliDatePi
   ];
 
   const prevMonth = () => {
-    setView(({ jy, jm }) =>
-      jm === 1 ? { jy: jy - 1, jm: 12 } : { jy, jm: jm - 1 },
+    setView((prev) =>
+      prev.jm === 1
+        ? { ...prev, jy: prev.jy - 1, jm: 12 }
+        : { ...prev, jm: prev.jm - 1 },
     );
   };
   const nextMonth = () => {
-    setView(({ jy, jm }) =>
-      jm === 12 ? { jy: jy + 1, jm: 1 } : { jy, jm: jm + 1 },
+    setView((prev) =>
+      prev.jm === 12
+        ? { ...prev, jy: prev.jy + 1, jm: 1 }
+        : { ...prev, jm: prev.jm + 1 },
     );
   };
 

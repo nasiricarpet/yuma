@@ -48,10 +48,39 @@ yuma/
 └── pnpm-workspace.yaml
 ```
 
+## پیش‌نیازها
+
+- Node.js >= 20.20.0 (توصیه: 20.20 LTS)
+- pnpm >= 10.0.0
+- Docker + docker-compose
+- PostgreSQL 15+ (یا از طریق Docker)
+- Redis 7+ (یا از طریق Docker)
+
+> نسخه دقیق Node در فایل [`.nvmrc`](.nvmrc) قفل شده است — با `nvm use` فعال می‌شود.
+
+## نکات مهم برای کاربران ایران
+
+- برای دانلود پکیج‌ها از میرورهای داخلی استفاده کنید:
+
+  ```bash
+  npm config set registry https://mirror.kargadan.ir/repository/npm-group/
+  pnpm config set registry https://mirror.kargadan.ir/repository/npm-group/
+  ```
+
+- برای باینری Node.js: <https://mirror-nodejs.runflare.com/dist/>
+
+- برای Docker images، در `/etc/docker/daemon.json` اضافه کنید:
+
+  ```json
+  {
+    "registry-mirrors": ["https://docker.arvancloud.ir"]
+  }
+  ```
+
 ## شروع سریع
 
 ```bash
-# ۱) پیش‌نیاز: Node >= 20 و pnpm 10 (corepack enable)
+# ۱) پیش‌نیاز: Node >= 20.20.0 و pnpm 10 (corepack enable)
 corepack enable
 pnpm install
 
@@ -73,6 +102,44 @@ pnpm dev
 - پنل مدیریت: <http://localhost:3002>
 - پنل خشکشویی: <http://localhost:3003>
 - صندوق نامه Mailhog: <http://localhost:8025>
+
+## استقرار روی سرور
+
+روی سرور ایران، همه اپ‌ها از طریق متغیرهای محیطی به API متصل می‌شوند.
+
+```bash
+# ۱) کلون و نصب
+ git clone <repo> && cd yuma
+corepack enable
+pnpm install
+
+# ۲) زیرساخت (PostgreSQL + Redis + MailHog)
+docker compose up -d postgres redis mailhog
+
+# ۳) دیتابیس
+pnpm db:generate
+pnpm db:migrate:deploy
+pnpm db:seed
+
+# ۴) build همه پکیج‌ها و اپ‌ها
+pnpm build
+
+# ۵) اجرای سرویس‌ها (هرکدام در یک سرویس/systemd جدا)
+pnpm --filter @yuma/api start               # API روی پورت ۳۰۰۱
+pnpm --filter @yuma/admin start             # پنل ادمین روی پورت ۳۰۰۲
+pnpm --filter @yuma/laundry start           # پنل خشکشویی روی پورت ۳۰۰۳
+```
+
+سپس در فایل‌های `.env.production` هر اپ، IP سرور را تنظیم کنید:
+
+| اپ | فایل | نمونه |
+| --- | --- | --- |
+| api | `.env` | `DATABASE_URL`, `REDIS_URL`, `JWT_SECRET`, `SMTP_*` |
+| admin | `.env.production` | `NEXT_PUBLIC_API_URL=http://SERVER_IP:3001/api` |
+| laundry | `.env.production` | `NEXT_PUBLIC_API_URL=http://SERVER_IP:3001/api` |
+| customer-app / driver-app | `.env` | `EXPO_PUBLIC_API_URL=http://SERVER_IP:3001/api` |
+
+> الگوی آماده در فایل‌های `.env.example` هر اپ وجود دارد — `cp .env.example .env.production`.
 
 > برای اپ‌های موبایل، ابتدا پکیج‌ها را یک‌بار build کنید (`pnpm build`) چون Metro خروجی `dist` پکیج‌ها را می‌خواند، سپس `pnpm --filter @yuma/customer-app start`.
 
