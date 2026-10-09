@@ -35,13 +35,13 @@ describe('OtpService', () => {
   });
 
   it('کد ۶ رقمی تولید و با انقضای ۶۰۰ ثانیه ذخیره می‌شود', async () => {
-    const code = await service.request('0912-345 6789');
+    const { devCode } = await service.request('0912-345 6789');
 
-    expect(code).toMatch(/^\d{6}$/);
-    expect(redis.store.get('otp:09123456789')).toEqual({ value: code, ttl: 600 });
+    expect(devCode).toMatch(/^\d{6}$/);
+    expect(redis.store.get('otp:09123456789')).toEqual({ value: devCode, ttl: 600 });
     expect(mail.sent).toContainEqual({
       to: '09123456789@yuma.local',
-      code,
+      code: devCode,
     });
   });
 
@@ -52,9 +52,9 @@ describe('OtpService', () => {
   });
 
   it('کد درست تأیید و سپس حذف می‌شود', async () => {
-    const code = await service.request('09123456789');
+    const { devCode } = await service.request('09123456789');
 
-    await expect(service.verify('09123456789', code)).resolves.toBe(true);
+    await expect(service.verify('09123456789', devCode as string)).resolves.toBe(true);
     expect(redis.store.has('otp:09123456789')).toBe(false);
   });
 
@@ -66,6 +66,29 @@ describe('OtpService', () => {
 
   it('کد منقضی‌شده با خطای ۴۰۰ رد می‌شود', async () => {
     await expect(service.verify('09123456789', '123456')).rejects.toThrow(BadRequestException);
+  });
+
+  it('در محیط توسعه کد برای تست دستی در devCode قرار می‌گیرد', async () => {
+    const result = await service.request('09123456789');
+
+    expect(result.devCode).toMatch(/^\d{6}$/);
+    expect(result.expiresIn).toBe(600);
+  });
+
+  it('در محیط production کد در خروجی قرار نمی‌گیرد', async () => {
+    const previous = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+
+    try {
+      const result = await service.request('09123456789');
+
+      expect(result.devCode).toBeUndefined();
+      expect(result.expiresIn).toBe(600);
+      // کد همچنان تولید و ارسال می‌شود، فقط در پاسخ برنمی‌گردد
+      expect(redis.store.has('otp:09123456789')).toBe(true);
+    } finally {
+      process.env.NODE_ENV = previous;
+    }
   });
 
   it('درخواست چهارم در پنجره ۱۰ دقیقه‌ای محدود می‌شود', async () => {

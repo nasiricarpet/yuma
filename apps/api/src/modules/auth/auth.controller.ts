@@ -27,8 +27,17 @@ export class AuthController {
   @Public()
   @Post('otp/request')
   @ApiOperation({ summary: 'ارسال کد تأیید به موبایل' })
-  async request(@Body() dto: RequestOtpDto): Promise<{ ok: true; mobile: string }> {
-    await this.otpService.request(dto.mobile);
+  async request(
+    @Body() dto: RequestOtpDto,
+  ): Promise<{ ok: true; mobile: string; devCode?: string }> {
+    const { devCode } = await this.otpService.request(dto.mobile);
+
+    // در محیط توسعه کد برای تست دستی در response قرار می‌گیرد؛
+    // در production سرویس کدی برنمی‌گرداند و این فیلد پر نمی‌شود
+    if (process.env.NODE_ENV !== 'production' && devCode) {
+      return { ok: true, mobile: dto.mobile, devCode };
+    }
+
     return { ok: true, mobile: dto.mobile };
   }
 
