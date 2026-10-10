@@ -4,10 +4,8 @@ import { AuditModule } from '../audit-log/audit.module';
 import { SupportService } from './support.service';
 import { SupportController } from './support.controller';
 import { AdminSupportController } from './admin-support.controller';
-import {
-  SlaProcessor,
-  SUPPORT_QUEUE,
-} from './jobs/sla.processor';
+import { SlaProcessor } from './jobs/sla.processor';
+import { SUPPORT_QUEUE } from './support.constants';
 
 /**
  * ماژول تیکت‌های پشتیبانی

@@ -12,7 +12,7 @@ import type { UserRole } from '@yuma/types';
 import { PrismaService } from '../../database/prisma.service';
 import { AuditService } from '../audit-log/audit.service';
 import { faMessages } from '../../common/messages.fa';
-import { SUPPORT_QUEUE, SUPPORT_SLA_JOB } from './jobs/sla.processor';
+import { SUPPORT_QUEUE, SUPPORT_SLA_JOB } from './support.constants';
 import type {
   TicketCategory,
   TicketPriority,

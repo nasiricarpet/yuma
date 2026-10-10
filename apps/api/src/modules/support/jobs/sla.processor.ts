@@ -2,22 +2,12 @@ import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Injectable, Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { SupportService } from '../support.service';
-
-/** نام صف پشتیبانی — هم برای jobهای SLA و هم پاسخ‌های ناهمگام */
-export const SUPPORT_QUEUE = 'support';
-
-/** job بررسی نقض SLA برای یک تیکت — payload: { ticketId } */
-export const SUPPORT_SLA_JOB = 'support:check-sla';
-
-/** job اسکن دوره‌ای همه‌ی تیکت‌های سررسید‌شده — بدون payload */
-export const SUPPORT_SLA_SCAN_JOB = 'support:scan-sla';
-
-/**
- * payload job بررسی SLA یک تیکت
- */
-export interface SlaCheckJobData {
-  ticketId: string;
-}
+import {
+  SUPPORT_QUEUE,
+  SUPPORT_SLA_JOB,
+  SUPPORT_SLA_SCAN_JOB,
+  type SlaCheckJobData,
+} from '../support.constants';
 
 /**
  * پردازشگر صف پشتیبانی — هشدار نقض SLA
