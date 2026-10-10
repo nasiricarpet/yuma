@@ -9,6 +9,9 @@ import {
   LifeBuoy,
   BarChart3,
   Settings,
+  UserRoundCog,
+  ScrollText,
+  Wallet,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -38,12 +41,15 @@ export const navigation: NavSection[] = [
       { title: 'مشتریان', href: '/customers', icon: Users },
       { title: 'کارگاه‌ها', href: '/workshops', icon: Store },
       { title: 'رانندگان', href: '/drivers', icon: Truck },
+      { title: 'پرسنل', href: '/staff', icon: UserRoundCog },
+      { title: 'لاگ ممیزی', href: '/audit-log', icon: ScrollText },
     ],
   },
   {
     title: 'مالی',
     items: [
       { title: 'پرداخت‌ها', href: '/payments', icon: CreditCard },
+      { title: 'تسویه کارگاه‌ها', href: '/settlements', icon: Wallet },
       { title: 'قیمت‌گذاری', href: '/pricing', icon: Calculator },
     ],
   },

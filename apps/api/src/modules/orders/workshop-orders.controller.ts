@@ -1,5 +1,13 @@
-import { Body, Controller, Get, Param, Patch } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Req,
+} from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import type { Request } from 'express';
 import {
   AuthUser,
   CurrentUser,
@@ -41,6 +49,7 @@ export class WorkshopOrdersController {
     @CurrentUser() user: AuthUser,
     @Param('id') orderId: string,
     @Body() dto: ChangeStatusDto,
+    @Req() req: Request,
   ) {
     const laundry = await this.laundriesService.getMyLaundry(user.id);
     const order = await this.ordersService.updateWorkshopOrderStatus(
@@ -49,6 +58,7 @@ export class WorkshopOrdersController {
       orderId,
       dto.toStatus,
       dto.note,
+      req,
     );
     return { ok: true, order };
   }

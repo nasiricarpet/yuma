@@ -3,6 +3,7 @@ import {
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
+import type { Request } from 'express';
 import { OrdersService } from './orders.service';
 import { OrderStateMachine } from './state-machine/order-state-machine';
 import type { AuthUser } from '../../common/decorators/current-user.decorator';
@@ -282,14 +283,74 @@ function createPrismaMock() {
     return row;
   }
 
-  return { prisma, seedOrder, orders, history, assignments, services };
+  return { prisma, seedOrder, orders, history, assignments, services, audit: createAuditMock() };
 }
 
 type PrismaMock = ReturnType<typeof createPrismaMock>;
 
+/**
+ * AuditService جعلی — `logFromRequest` را با همان امضای سرویس واقعی
+ * شبیه‌سازی می‌کند تا رویدادهای ثبت‌شده در تست‌ها قابل بررسی باشند.
+ */
+function createAuditMock() {
+  const calls: Array<{
+    req: unknown;
+    action: string;
+    entity: { type: string; id?: string | null };
+    before?: unknown;
+    after?: unknown;
+    context?: Record<string, unknown>;
+  }> = [];
+
+  return {
+    calls,
+    logFromRequest: jest.fn(async (req, action, entity, before, after, context) => {
+      calls.push({ req, action, entity, before, after, context });
+    }),
+    log: jest.fn(async (action, entityType, entityId, before, after, context) => {
+      calls.push({
+        req: null,
+        action,
+        entity: { type: entityType, id: entityId },
+        before,
+        after,
+        context,
+      });
+    }),
+  };
+}
+
+/** آخرین رویداد ممیزی ثبت‌شده — برای بررسی لاگ رویدادها در تست‌ها */
+function lastAuditEntry(mock: PrismaMock) {
+  return mock.audit.calls[mock.audit.calls.length - 1];
+}
+
+/** درخواست HTTP جعلی با IP و User-Agent — برای تست استخراج اطلاعات درخواست */
+function fakeRequest(overrides: Record<string, any> = {}): Request {
+  return {
+    ip: '85.10.20.30',
+    headers: { 'user-agent': 'Jest/1.0 (test)' },
+    ...overrides,
+  } as unknown as Request;
+}
+
 /** آخرین رخداد تاریخچه — برای بررسی لاگ انتقال وضعیت در تست‌ها */
 function lastHistoryEntry(mock: PrismaMock): Record<string, any> {
   return mock.history[mock.history.length - 1];
+}
+
+/**
+ * شبیه‌سازی EventEmitter2 — رویدادهای انتشارشده را نگه می‌دارد تا
+ * بشود بررسی کرد که تغییر وضعیت، رویداد اعلان را منتشر می‌کند.
+ */
+function createEventEmitter() {
+  return {
+    emitted: [] as Array<{ event: string; payload: unknown }>,
+    emit(event: string, payload: unknown): boolean {
+      this.emitted.push({ event, payload });
+      return true;
+    },
+  };
 }
 
 /** ساخت سرویس با Prisma جعلی و ماشین وضعیت واقعی */
@@ -300,6 +361,8 @@ function createService(mock: PrismaMock) {
     mock.prisma as any,
     s3 as any,
     new OrderStateMachine(),
+    mock.audit as any,
+    createEventEmitter() as any,
   );
 }
 
@@ -897,6 +960,98 @@ describe('OrdersService — لیست ایزولهٔ کارگاه و سفیر', (
     const createdAt = orders.map((o) => o.createdAt.valueOf());
 
     expect([...createdAt].sort((a, b) => b - a)).toEqual(createdAt);
+  });
+});
+
+describe('OrdersService — رویدادهای ممیزی', () => {
+  let mock: PrismaMock;
+  let service: OrdersService;
+
+  beforeEach(() => {
+    mock = createPrismaMock();
+    service = createService(mock);
+    mock.services.set('service-1', {
+      id: 'service-1',
+      laundryId: 'laundry-1',
+      unitPrice: 50000,
+      isActive: true,
+    });
+  });
+
+  it('ثبت سفارش یک رویداد ممیزی create می‌سازد', async () => {
+    const order = await service.createOrder(
+      CUSTOMER,
+      createOrderDto(),
+      fakeRequest(),
+    );
+
+    expect(mock.audit.logFromRequest).toHaveBeenCalledTimes(1);
+
+    const entry = lastAuditEntry(mock);
+    expect(entry.action).toBe('create');
+    expect(entry.entity).toEqual({ type: 'order', id: order.id });
+    // سفارش تازه ساخته شده — قبل از آن چیزی وجود ندارد
+    expect(entry.before).toBeNull();
+    // بعد: خود سفارش ثبت‌شده
+    expect(entry.after).toMatchObject({ id: order.id, status: 'requested' });
+    // بازیگر از actor سرویس استخراج شده است
+    expect(entry.context).toEqual({
+      actorId: CUSTOMER.id,
+      actorRole: 'customer',
+    });
+  });
+
+  it('تغییر وضعیت رویداد status-change با before/after می‌سازد', async () => {
+    const order = mock.seedOrder({ status: 'requested' });
+
+    await service.adminUpdateOrderStatus(
+      ADMIN,
+      order.id,
+      'awaiting_confirmation',
+      undefined,
+      fakeRequest({ ip: '10.20.30.40' }),
+    );
+
+    const entry = lastAuditEntry(mock);
+    expect(entry.action).toBe('status-change');
+    expect(entry.entity).toEqual({ type: 'order', id: order.id });
+    // قبل و بعد: وضعیت قدیمی و جدید سفارش
+    expect(entry.before).toEqual({ status: 'requested' });
+    expect(entry.after).toEqual({ status: 'awaiting_confirmation' });
+    expect(entry.context).toEqual({ actorId: ADMIN.id, actorRole: 'admin' });
+    // IP از درخواست استخراج شده است
+    expect(entry.req).toMatchObject({ ip: '10.20.30.40' });
+  });
+
+  it('لغو سفارش رویداد cancel با دلیل می‌سازد', async () => {
+    const order = mock.seedOrder({ status: 'requested' });
+
+    await service.cancelOrder(
+      CUSTOMER,
+      order.id,
+      'مشتری منصرف شد',
+      fakeRequest(),
+    );
+
+    const entry = lastAuditEntry(mock);
+    expect(entry.action).toBe('cancel');
+    expect(entry.entity).toEqual({ type: 'order', id: order.id });
+    expect(entry.before).toBeNull();
+    expect(entry.after).toEqual({ reason: 'مشتری منصرف شد' });
+  });
+
+  it('شکست ثبت ممیزی جریان اصلی را قطع نمی‌کند', async () => {
+    // سرویس ممیزی خطا می‌دهد — نباید روی نتیجه‌ی سفارش اثر بگذارد
+    mock.audit.logFromRequest.mockRejectedValueOnce(new Error('db down'));
+
+    const order = await service.createOrder(
+      CUSTOMER,
+      createOrderDto(),
+      fakeRequest(),
+    );
+
+    expect(order.status).toBe('requested');
+    expect(mock.orders.size).toBe(1);
   });
 });
 

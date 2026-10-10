@@ -17,11 +17,12 @@ const redis = {
   },
 };
 
-/** شبیه‌سازی MailService — در تست‌ها چیزی ارسال نمی‌شود */
-const mail = {
-  sent: [] as Array<{ to: string; code: string }>,
-  async sendOtp(to: string, code: string): Promise<void> {
-    this.sent.push({ to, code });
+/** شبیه‌سازی EventEmitter2 — رویدادهای انتشارشده را نگه می‌دارد */
+const eventEmitter = {
+  emitted: [] as Array<{ event: string; payload: unknown }>,
+  emit(event: string, payload: unknown): boolean {
+    this.emitted.push({ event, payload });
+    return true;
   },
 };
 
@@ -30,8 +31,8 @@ describe('OtpService', () => {
 
   beforeEach(() => {
     redis.store.clear();
-    mail.sent.length = 0;
-    service = new OtpService(redis as never, mail as never);
+    eventEmitter.emitted.length = 0;
+    service = new OtpService(redis as never, eventEmitter as never);
   });
 
   it('کد ۶ رقمی تولید و با انقضای ۶۰۰ ثانیه ذخیره می‌شود', async () => {
@@ -39,9 +40,10 @@ describe('OtpService', () => {
 
     expect(devCode).toMatch(/^\d{6}$/);
     expect(redis.store.get('otp:09123456789')).toEqual({ value: devCode, ttl: 600 });
-    expect(mail.sent).toContainEqual({
-      to: '09123456789@yuma.local',
-      code: devCode,
+    // کد از طریق رویداد otp.requested برای ارسال پیامک منتشر می‌شود
+    expect(eventEmitter.emitted).toContainEqual({
+      event: 'otp.requested',
+      payload: { mobile: '09123456789', code: devCode },
     });
   });
 

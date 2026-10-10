@@ -1,5 +1,13 @@
-import { Body, Controller, Get, Param, Patch } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Req,
+} from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import type { Request } from 'express';
 import {
   AuthUser,
   CurrentUser,
@@ -44,6 +52,7 @@ export class DriverOrdersController {
     @CurrentUser() user: AuthUser,
     @Param('id') orderId: string,
     @Body() dto: ChangeStatusDto,
+    @Req() req: Request,
   ) {
     const driver = await this.driversService.getMyProfile(user.id);
     const order = await this.ordersService.updateDriverOrderStatus(
@@ -52,6 +61,7 @@ export class DriverOrdersController {
       orderId,
       dto.toStatus,
       dto.note,
+      req,
     );
     return { ok: true, order };
   }

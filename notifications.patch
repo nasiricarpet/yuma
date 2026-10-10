@@ -1,0 +1,1658 @@
+diff --git a/apps/api/src/modules/notifications/events.ts b/apps/api/src/modules/notifications/events.ts
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/apps/api/src/modules/notifications/events.ts
+@@ -0,0 +1,50 @@
++import type { OrderFlowStatus } from '@yuma/types';
++
++/**
++ * رویدادهای انتشارشده در سراسر برنامه که ماژول اعلان‌ها به آن‌ها گوش می‌دهد.
++ * این اینترفیس‌ها فقط نوع داده هستند و توسط فرستندهٔ رویداد (orders/payments/otp)
++ * به‌عنوان payload ارسال می‌شوند.
++ */
++
++/** تغییر وضعیت سفارش — بعد از commit تراکنش منتشر می‌شود */
++export interface OrderStatusChangedEvent {
++  orderId: string;
++  trackingCode: string;
++  customerId: string;
++  /** وضعیت قبلی — برای جلوگیری از ارسال تکراری */
++  from: OrderFlowStatus | null;
++  /** وضعیت جدید */
++  to: OrderFlowStatus;
++  /** شناسهٔ عامل تغییر — کاربر یا سیستم */
++  actorId: string;
++  actorRole: string;
++}
++
++/** تأیید موفق پرداخت */
++export interface PaymentCapturedEvent {
++  paymentId: string;
++  orderId: string;
++  trackingCode: string;
++  customerId: string;
++  /** مبلغ به ریال */
++  amount: number;
++  referenceId: string | null;
++}
++
++/** شکست پرداخت */
++export interface PaymentFailedEvent {
++  paymentId: string;
++  orderId: string;
++  trackingCode: string;
++  customerId: string;
++  amount: number;
++  /** دلیل شکست — از طرف درگاه */
++  reason: string | null;
++}
++
++/** درخواست کد تأیید یکبار مصرف */
++export interface OtpRequestedEvent {
++  mobile: string;
++  code: string;
++}
++
+
+diff --git a/apps/api/src/modules/notifications/jobs/send-sms.processor.ts b/apps/api/src/modules/notifications/jobs/send-sms.processor.ts
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/apps/api/src/modules/notifications/jobs/send-sms.processor.ts
+@@ -0,0 +1,104 @@
++import { Processor, WorkerHost } from '@nestjs/bullmq';
++import { Inject, Injectable, Logger } from '@nestjs/common';
++import { Job } from 'bullmq';
++import { PrismaService } from '../../../database/prisma.service';
++import { SMS_PROVIDER, SmsProvider } from '../providers/sms-provider.interface';
++import { NotificationTemplatesService } from '../templates.service';
++
++/** نام صف ارسال پیامک */
++export const SMS_QUEUE = 'sms';
++/** نام job داخل صف */
++export const SMS_JOB = 'send-sms';
++
++/** تعداد تلاش‌های مجدد در صورت شکست */
++const MAX_ATTEMPTS = 3;
++
++/**
++ * پردازشگر صف ارسال پیامک
++ *
++ * یک رکورد اعلان با وضعیت `queued` را از دیتابیس می‌خواند، متن قالب را
++ * رندر کرده و از طریق پروایدر پیامک ارسال می‌کند. در صورت شکست پروایدر:
++ *  - رکورد اعلان به `failed` به‌روز می‌شود
++ *  - خطا دوباره پرتاب می‌شود تا BullMQ طبق تنظیمات backoff retry کند
++ *
++ * توجه: این پردازش **بعد از** commit تراکنش سفارش/پرداخت اجرا می‌شود،
++ * بنابراین شکست ارسال پیامک هرگز روی وضعیت سفارش اثر نمی‌گذارد.
++ */
++@Processor(SMS_QUEUE)
++@Injectable()
++export class SendSmsProcessor extends WorkerHost {
++  private readonly logger = new Logger(SendSmsProcessor.name);
++
++  constructor(
++    private readonly prisma: PrismaService,
++    private readonly templates: NotificationTemplatesService,
++    @Inject(SMS_PROVIDER) private readonly provider: SmsProvider,
++  ) {
++    super();
++  }
++
++  async process(job: Job<{ notificationId: string }>): Promise<void> {
++    const { notificationId } = job.data;
++
++    const notification = await this.prisma.notification.findUnique({
++      where: { id: notificationId },
++    });
++
++    if (!notification) {
++      this.logger.warn(`اعلان پیدا نشد — notificationId: ${notificationId}`);
++      return;
++    }
++
++    // idempotency: اگر قبلاً ارسال شده، کاری نکن
++    if (notification.status === 'sent') return;
++
++    const { body } = await this.templates.renderTemplate(
++      notification.templateCode,
++      notification.payload as Record<string, string | number>,
++      notification.channel as 'sms' | 'email',
++    );
++
++    try {
++      const result = await this.provider.send(notification.recipient, body);
++
++      await this.prisma.notification.update({
++        where: { id: notification.id },
++        data: {
++          status: result.status,
++          providerRef: result.providerRef,
++          errorMessage: result.error,
++          attempts: { increment: 1 },
++          sentAt: result.status === 'sent' ? new Date() : undefined,
++        },
++      });
++
++      if (result.status === 'failed') {
++        throw new Error(result.error ?? 'ارسال پیامک ناموفق بود');
++      }
++
++      this.logger.debug(
++        `پیامک ارسال شد — notificationId: ${notification.id} | ref: ${result.providerRef ?? 'نامشخص'}`,
++      );
++    } catch (error) {
++      const message = error instanceof Error ? error.message : String(error);
++
++      await this.prisma.notification.update({
++        where: { id: notification.id },
++        data: {
++          status: 'failed',
++          errorMessage: message,
++          attempts: { increment: 1 },
++        },
++      });
++
++      // خطا پرتاب می‌شود تا BullMQ job را failed کند و retry انجام دهد
++      if (job.attemptsMade >= MAX_ATTEMPTS - 1) {
++        this.logger.error(
++          `ارسال پیامک شکست خورد — notificationId: ${notification.id} | ${message}`,
++        );
++      }
++      throw error;
++    }
++  }
++}
++
+
+diff --git a/apps/api/src/modules/notifications/listeners/order.listener.ts b/apps/api/src/modules/notifications/listeners/order.listener.ts
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/apps/api/src/modules/notifications/listeners/order.listener.ts
+@@ -0,0 +1,74 @@
++import { Injectable, Logger } from '@nestjs/common';
++import { OnEvent } from '@nestjs/event-emitter';
++import type { OrderFlowStatus } from '@yuma/types';
++import { PrismaService } from '../../../database/prisma.service';
++import { NotificationService } from '../notification.service';
++import { OrderStatusChangedEvent } from '../events';
++
++/**
++ * نگاشت وضعیت سفارش به کد قالب پیامک
++ *
++ * فقط وضعیت‌های کلیدی مسیر سفارش پیامک دارند؛ وضعیت‌های میانی مثل
++ * awaiting_confirmation عمداً پیامک نمی‌فرستند تا مشتری اسپم نشود.
++ */
++const STATUS_TEMPLATES = new Map<OrderFlowStatus, string>([
++  ['requested', 'order_requested'],
++  ['picked_up', 'order_picked_up'],
++  ['quoted', 'quotation_sent'],
++  ['in_cleaning', 'order_in_cleaning'],
++  ['ready_for_delivery', 'order_ready'],
++  ['delivered', 'order_delivered'],
++]);
++
++/**
++ * Listener رویداد `order.status_changed`
++ *
++ * بعد از commit شدن تغییر وضعیت سفارش، پیامک متناظر را برای مشتری
++ * ارسال می‌کند. ارسال پیامک در یک بلاک try/catch انجام می‌شود تا
++ * خرابی سامانه پیامک هرگز روی جریان سفارش اثر نگذارد.
++ */
++@Injectable()
++export class OrderNotificationListener {
++  private readonly logger = new Logger(OrderNotificationListener.name);
++
++  constructor(
++    private readonly prisma: PrismaService,
++    private readonly notifications: NotificationService,
++  ) {}
++
++  @OnEvent('order.status_changed')
++  async handleStatusChanged(payload: OrderStatusChangedEvent): Promise<void> {
++    const template = STATUS_TEMPLATES.get(payload.to);
++    if (!template) return;
++
++    try {
++      const order = await this.prisma.order.findUnique({
++        where: { id: payload.orderId },
++        include: { customer: { select: { mobile: true, fullName: true } } },
++      });
++
++      if (!order?.customer?.mobile) {
++        this.logger.warn(
++          `شماره موبایل مشتری موجود نیست — orderId: ${payload.orderId}`,
++        );
++        return;
++      }
++
++      await this.notifications.send(
++        order.customer.mobile,
++        template,
++        {
++          trackingCode: order.trackingCode,
++          customerName: order.customer.fullName ?? '',
++        },
++        { userId: order.customerId, orderId: order.id },
++      );
++    } catch (error) {
++      const message = error instanceof Error ? error.message : String(error);
++      this.logger.warn(
++        `خطا در ارسال پیامک تغییر وضعیت سفارش — orderId: ${payload.orderId} | ${message}`,
++      );
++    }
++  }
++}
++
+
+diff --git a/apps/api/src/modules/notifications/listeners/otp.listener.ts b/apps/api/src/modules/notifications/listeners/otp.listener.ts
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/apps/api/src/modules/notifications/listeners/otp.listener.ts
+@@ -0,0 +1,41 @@
++import { Inject, Injectable, Logger } from '@nestjs/common';
++import { OnEvent } from '@nestjs/event-emitter';
++import { SMS_PROVIDER, SmsProvider } from '../providers/sms-provider.interface';
++import { OtpRequestedEvent } from '../events';
++
++/** پیشوند متن پیامک کد تأیید — شماره کد با متغیر داده می‌شود */
++const OTP_BODY = 'کد تأیید ورود به یوما: {{code}}\nاین کد ۱۰ دقیقه اعتبار دارد.';
++
++/**
++ * Listener رویداد `otp.requested`
++ *
++ * کد یکبار مصرف را از طریق پروایدر پیامک ارسال می‌کند. برخلاف اعلان‌های
++ * سفارش، OTP از قالب دیتابیس عبور نمی‌کند: پیام کوتاه، پرحجم و زمان‌حساس
++ * است و متن آن در همین‌جا ثابت می‌ماند. در محیط development پروایدر mock
++ * فقط کد را در کنسول لاگ می‌کند.
++ *
++ * خطای ارسال بلعیده می‌شود تا مسیر درخواست OTP متوقف نشود — کاربر می‌تواند
++ * مجدداً درخواست کد بدهد (سرویس OTP کد را در Redis ذخیره کرده است).
++ */
++@Injectable()
++export class OtpNotificationListener {
++  private readonly logger = new Logger(OtpNotificationListener.name);
++
++  constructor(@Inject(SMS_PROVIDER) private readonly provider: SmsProvider) {}
++
++  @OnEvent('otp.requested')
++  async handleOtpRequested(payload: OtpRequestedEvent): Promise<void> {
++    try {
++      await this.provider.send(
++        payload.mobile,
++        OTP_BODY.replace('{{code}}', payload.code),
++      );
++    } catch (error) {
++      const message = error instanceof Error ? error.message : String(error);
++      this.logger.warn(
++        `خطا در ارسال پیامک OTP به ${payload.mobile} | ${message}`,
++      );
++    }
++  }
++}
++
+
+diff --git a/apps/api/src/modules/notifications/listeners/payment.listener.ts b/apps/api/src/modules/notifications/listeners/payment.listener.ts
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/apps/api/src/modules/notifications/listeners/payment.listener.ts
+@@ -0,0 +1,79 @@
++import { Injectable, Logger } from '@nestjs/common';
++import { OnEvent } from '@nestjs/event-emitter';
++import { PrismaService } from '../../../database/prisma.service';
++import { NotificationService } from '../notification.service';
++import { PaymentCapturedEvent, PaymentFailedEvent } from '../events';
++
++/**
++ * Listener رویدادهای پرداخت
++ *
++ *  - `payment.captured` → پیامک تأیید پرداخت (`payment_success`)
++ *  - `payment.failed`    → پیامک شکست پرداخت (`payment_failed`)
++ *
++ * این رویدادها بعد از commit تراکنش پرداخت منتشر می‌شوند، بنابراین
++ * خرابی سامانه پیامک روی وضعیت پرداخت اثر ندارد.
++ */
++@Injectable()
++export class PaymentNotificationListener {
++  private readonly logger = new Logger(PaymentNotificationListener.name);
++
++  constructor(
++    private readonly prisma: PrismaService,
++    private readonly notifications: NotificationService,
++  ) {}
++
++  @OnEvent('payment.captured')
++  async handleCaptured(payload: PaymentCapturedEvent): Promise<void> {
++    await this.sendOrderSms(payload.orderId, 'payment_success', {
++      trackingCode: payload.trackingCode,
++      amount: formatToman(payload.amount),
++      referenceId: payload.referenceId ?? '',
++    });
++  }
++
++  @OnEvent('payment.failed')
++  async handleFailed(payload: PaymentFailedEvent): Promise<void> {
++    await this.sendOrderSms(payload.orderId, 'payment_failed', {
++      trackingCode: payload.trackingCode,
++      amount: formatToman(payload.amount),
++      reason: payload.reason ?? '',
++    });
++  }
++
++  /** مشتری سفارش را پیدا کرده و پیامک را ارسال می‌کند */
++  private async sendOrderSms(
++    orderId: string,
++    template: string,
++    data: Record<string, string | number>,
++  ): Promise<void> {
++    try {
++      const order = await this.prisma.order.findUnique({
++        where: { id: orderId },
++        include: { customer: { select: { mobile: true } } },
++      });
++
++      if (!order?.customer?.mobile) {
++        this.logger.warn(
++          `شماره موبایل مشتری موجود نیست — orderId: ${orderId}`,
++        );
++        return;
++      }
++
++      await this.notifications.send(order.customer.mobile, template, data, {
++        userId: order.customerId,
++        orderId: order.id,
++      });
++    } catch (error) {
++      const message = error instanceof Error ? error.message : String(error);
++      this.logger.warn(
++        `خطا در ارسال پیامک پرداخت — orderId: ${orderId} | ${message}`,
++      );
++    }
++  }
++}
++
++/** تبدیل ریال به نمایش فارسی تومان — مثلاً ۱۲۵۰۰۰۰ ریال → ۱۲۵٬۰۰۰ تومان */
++function formatToman(rial: number): string {
++  return Number(rial / 10).toLocaleString('fa-IR');
++}
++
+
+diff --git a/apps/api/src/modules/notifications/notification.service.spec.ts b/apps/api/src/modules/notifications/notification.service.spec.ts
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/apps/api/src/modules/notifications/notification.service.spec.ts
+@@ -0,0 +1,258 @@
++import { ConfigService } from '@nestjs/config';
++import { EventEmitter2 } from '@nestjs/event-emitter';
++import type { Queue } from 'bullmq';
++import { NotificationService } from './notification.service';
++import { NotificationTemplatesService } from './templates.service';
++import { SendSmsProcessor } from './jobs/send-sms.processor';
++import { OrderNotificationListener } from './listeners/order.listener';
++import { MockSmsProvider } from './providers/mock-sms.provider';
++import { KavenegarProvider } from './providers/kavenegar.provider';
++import { chooseSmsProvider } from './notifications.module';
++
++/** قالب نمونه با متغیر {{trackingCode}} */
++const SAMPLE_TEMPLATE = {
++  id: 'tpl-1',
++  code: 'order_ready',
++  channel: 'sms',
++  locale: 'fa',
++  version: 1,
++  subject: null,
++  body: 'سفارش {{trackingCode}} آماده تحویل است.',
++  isActive: true,
++  createdAt: new Date(),
++};
++
++type PrismaMock = Record<string, Record<string, jest.Mock>>;
++
++/** شبیه‌سازی PrismaService — فقط جدول‌های مربوط به اعلان */
++function createPrismaMock(): PrismaMock {
++  return {
++    notification: {
++      create: jest.fn(async (args: { data: Record<string, unknown> }) => ({
++        id: 'notif-1',
++        status: 'queued',
++        ...args.data,
++      })),
++      update: jest.fn(async () => ({})),
++      findUnique: jest.fn(async () => null),
++    },
++    notificationTemplate: {
++      findFirst: jest.fn(async () => ({ ...SAMPLE_TEMPLATE })),
++    },
++    order: {
++      findUnique: jest.fn(async () => null),
++      update: jest.fn(async () => ({})),
++    },
++  };
++}
++
++describe('NotificationsModule', () => {
++  // ۱) send() یک ردیف Notification با وضعیت queued می‌سازد
++  it('send یک ردیف Notification با وضعیت queued می‌سازد و در صف قرار می‌دهد', async () => {
++    const prisma = createPrismaMock();
++    const templates = new NotificationTemplatesService(prisma as never);
++    const queue = { add: jest.fn(async () => ({})) } as unknown as Queue;
++
++    const service = new NotificationService(prisma as never, templates, queue);
++
++    const result = await service.send(
++      '09123456789',
++      'order_ready',
++      { trackingCode: 'YUMA-1234' },
++      { userId: 'user-1', orderId: 'order-1' },
++    );
++
++    expect(prisma.notification.create).toHaveBeenCalledWith({
++      data: {
++        userId: 'user-1',
++        orderId: 'order-1',
++        channel: 'sms',
++        templateCode: 'order_ready',
++        recipient: '09123456789',
++        payload: { trackingCode: 'YUMA-1234' },
++        status: 'queued',
++      },
++    });
++    expect(queue.add).toHaveBeenCalledWith(
++      'send-sms',
++      { notificationId: 'notif-1' },
++      expect.objectContaining({ attempts: 3 }),
++    );
++    expect(result.status).toBe('queued');
++  });
++
++  // ۲) در dev پروایدر mock انتخاب و صدا زده می‌شود
++  it('در محیط development پروایدر mock انتخاب و توسط job صدا زده می‌شود', async () => {
++    const devConfig = new ConfigService({ NODE_ENV: 'development' });
++    const kavenegar = new KavenegarProvider(devConfig);
++    const mock = new MockSmsProvider();
++
++    // انتخاب پروایدر بر اساس پیکربندی
++    expect(chooseSmsProvider(devConfig, kavenegar, mock)).toBe(mock);
++
++    // پروایدر mock در processor واقعاً صدا زده می‌شود
++    const prisma = createPrismaMock();
++    prisma.notification.findUnique.mockResolvedValue({
++      id: 'notif-1',
++      status: 'queued',
++      channel: 'sms',
++      templateCode: 'order_ready',
++      recipient: '09123456789',
++      payload: { trackingCode: 'YUMA-1234' },
++    });
++
++    const templates = new NotificationTemplatesService(prisma as never);
++    const sendSpy = jest.spyOn(mock, 'send');
++    const processor = new SendSmsProcessor(
++      prisma as never,
++      templates,
++      mock as never,
++    );
++
++    await processor.process({
++      data: { notificationId: 'notif-1' },
++    } as never);
++
++    expect(sendSpy).toHaveBeenCalledWith(
++      '09123456789',
++      'سفارش YUMA-1234 آماده تحویل است.',
++    );
++
++    expect(prisma.notification.update).toHaveBeenCalledWith({
++      where: { id: 'notif-1' },
++      data: expect.objectContaining({
++        status: 'sent',
++        attempts: { increment: 1 },
++      }),
++    });
++  });
++
++  // ۳) متغیرهای قالب درست جایگزین می‌شوند
++  it('متغیرهای {{var}} قالب با مقادیر دریافتی جایگزین می‌شوند', async () => {
++    const prisma = createPrismaMock();
++    prisma.notificationTemplate.findFirst.mockResolvedValue({
++      ...SAMPLE_TEMPLATE,
++      body: 'سفارش {{trackingCode}} برای {{customerName}} آماده است.',
++    });
++
++    const templates = new NotificationTemplatesService(prisma as never);
++
++    await expect(
++      templates.renderTemplate('order_ready', {
++        trackingCode: 'YUMA-99',
++        customerName: 'علی رضایی',
++      }),
++    ).resolves.toEqual({
++      subject: null,
++      body: 'سفارش YUMA-99 برای علی رضایی آماده است.',
++    });
++
++    // متغیر ناموجود به رشتهٔ خالی تبدیل می‌شود
++    await expect(
++      templates.renderTemplate('order_ready', { trackingCode: 'YUMA-99' }),
++    ).resolves.toEqual({
++      subject: null,
++      body: 'سفارش YUMA-99 برای  آماده است.',
++    });
++  });
++
++  // ۴) رویداد order.status_changed باعث ارسال SMS می‌شود
++  it('رویداد order.status_changed پیامک متناظر با وضعیت جدید را ارسال می‌کند', async () => {
++    const prisma = createPrismaMock();
++    prisma.order.findUnique.mockResolvedValue({
++      id: 'order-1',
++      trackingCode: 'YUMA-7',
++      customerId: 'user-1',
++      customer: { mobile: '09123456789', fullName: 'علی رضایی' },
++    });
++
++    const send = jest.fn(async () => ({ id: 'notif-1' }));
++    const notifications = { send } as unknown as NotificationService;
++    const listener = new OrderNotificationListener(prisma as never, notifications);
++
++    const emitter = new EventEmitter2();
++    emitter.on('order.status_changed', (payload) =>
++      listener.handleStatusChanged(payload),
++    );
++
++    // انتقال به وضعیتی که قالب دارد → پیامک ارسال می‌شود
++    await emitter.emitAsync('order.status_changed', {
++      orderId: 'order-1',
++      trackingCode: 'YUMA-7',
++      customerId: 'user-1',
++      from: 'in_cleaning',
++      to: 'ready_for_delivery',
++      actorId: 'admin-1',
++      actorRole: 'admin',
++    });
++
++    expect(send).toHaveBeenCalledWith(
++      '09123456789',
++      'order_ready',
++      { trackingCode: 'YUMA-7', customerName: 'علی رضایی' },
++      { userId: 'user-1', orderId: 'order-1' },
++    );
++
++    // انتقال به وضعیت بدون قالب → پیامکی ارسال نمی‌شود (جلوگیری از اسپم)
++    send.mockClear();
++    await emitter.emitAsync('order.status_changed', {
++      orderId: 'order-1',
++      trackingCode: 'YUMA-7',
++      customerId: 'user-1',
++      from: 'ready_for_delivery',
++      to: 'quality_control',
++      actorId: 'admin-1',
++      actorRole: 'admin',
++    });
++
++    expect(send).not.toHaveBeenCalled();
++  });
++
++  // ۵) خطای provider باعث failure در job می‌شود بدون rollback سفارش
++  it('خطای پروایدر رکورد را failed می‌کند، job را failed می‌نماید و سفارش دست‌نخورده باقی می‌ماند', async () => {
++    const prisma = createPrismaMock();
++    prisma.notification.findUnique.mockResolvedValue({
++      id: 'notif-1',
++      status: 'queued',
++      channel: 'sms',
++      templateCode: 'order_ready',
++      recipient: '09123456789',
++      payload: { trackingCode: 'YUMA-1234' },
++    });
++
++    const failingProvider = {
++      name: 'failing',
++      send: jest.fn(async () => {
++        throw new Error('خطای شبکهٔ کاونگر');
++      }),
++    } as never;
++
++    const templates = new NotificationTemplatesService(prisma as never);
++    const processor = new SendSmsProcessor(
++      prisma as never,
++      templates,
++      failingProvider,
++    );
++
++    // خطا دوباره پرتاب می‌شود تا BullMQ job را failed کند
++    await expect(
++      processor.process({
++        data: { notificationId: 'notif-1' },
++        attemptsMade: 0,
++      } as never),
++    ).rejects.toThrow('خطای شبکهٔ کاونگر');
++
++    // رکورد اعلان به‌عنوان failed با پیام خطا ثبت می‌شود
++    expect(prisma.notification.update).toHaveBeenCalledWith({
++      where: { id: 'notif-1' },
++      data: expect.objectContaining({
++        status: 'failed',
++        errorMessage: 'خطای شبکهٔ کاونگر',
++      }),
++    });
++
++    // پردازشگر ارسال پیامک هرگز سفارش را تغییر نمی‌دهد — rollback نمی‌شود
++    expect(prisma.order.update).not.toHaveBeenCalled();
++  });
++});
++
+
+diff --git a/apps/api/src/modules/notifications/notification.service.ts b/apps/api/src/modules/notifications/notification.service.ts
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/apps/api/src/modules/notifications/notification.service.ts
+@@ -0,0 +1,108 @@
++import { Inject, Injectable, Logger, NotImplementedException } from '@nestjs/common';
++import { InjectQueue } from '@nestjs/bullmq';
++import { Queue } from 'bullmq';
++import { Notification } from '@yuma/db';
++import { PrismaService } from '../../database/prisma.service';
++import { NotificationChannel } from './providers/sms-provider.interface';
++import { SMS_JOB, SMS_QUEUE } from './jobs/send-sms.processor';
++import { NotificationTemplatesService } from './templates.service';
++
++/** گزینه‌های ارسال اعلان */
++export interface SendOptions {
++  /** شناسهٔ کاربر گیرنده — برای صفحهٔ اعلان‌های کاربر */
++  userId?: string;
++  /** شناسهٔ سفارش مرتبط — برای گروه‌بندی اعلان‌های یک سفارش */
++  orderId?: string;
++  /** کانال ارسال — پیش‌فرض پیامک */
++  channel?: NotificationChannel;
++  /** زبان قالب — پیش‌فرض fa */
++  locale?: string;
++}
++
++/** داده‌ی متغیرهای قالب: کلید → مقدار */
++export type TemplateData = Record<string, string | number>;
++
++/**
++ * سرویس مرکزی ارسال اعلان
++ *
++ * یک رکورد `Notification` با وضعیت `queued` در دیتابیس می‌سازد و سپس
++ * ارسال واقعی را به صف BullMQ می‌سپارد. به این ترتیب:
++ *  - مسیر کاربری هرگز منتظر ارسال پیامک نمی‌ماند
++ *  - در صورت شکست، retry با backoff انجام می‌شود
++ *  - تاریخچهٔ کامل اعلان‌ها قابل رهگیری است
++ *
++ * رویدادهای دامنه (تغییر وضعیت سفارش، پرداخت، OTP) از طریق listenerها
++ * این متد را صدا می‌زنند.
++ */
++@Injectable()
++export class NotificationService {
++  private readonly logger = new Logger(NotificationService.name);
++
++  constructor(
++    private readonly prisma: PrismaService,
++    private readonly templates: NotificationTemplatesService,
++    @InjectQueue(SMS_QUEUE) private readonly smsQueue: Queue,
++  ) {}
++
++  /**
++   * ساخت اعلان از روی قالب و قراردادن آن در صف ارسال
++   *
++   * @param to گیرنده — شماره موبایل
++   * @param template کد قالب — مثلاً `order_ready`
++   * @param data متغیرهای قالب — مثلاً `{ trackingCode: 'YUMA-1234' }`
++   * @param options گزینه‌های اضافی (کاربر، سفارش، کانال)
++   * @returns رکورد اعلان با وضعیت `queued`
++   */
++  async send(
++    to: string,
++    template: string,
++    data: TemplateData = {},
++    options: SendOptions = {},
++  ): Promise<Notification> {
++    const channel: NotificationChannel = options.channel ?? 'sms';
++
++    if (channel !== 'sms') {
++      throw new NotImplementedException(
++        `کانال ${channel} هنوز پیاده‌سازی نشده است`,
++      );
++    }
++
++    // اعتبارسنجی قالب قبل از ثبت — اگر قالب نباشد، نیازی به رکورد نیست
++    const { body } = await this.templates.renderTemplate(
++      template,
++      data,
++      channel,
++      options.locale,
++    );
++
++    const notification = await this.prisma.notification.create({
++      data: {
++        userId: options.userId ?? undefined,
++        orderId: options.orderId ?? undefined,
++        channel,
++        templateCode: template,
++        recipient: to,
++        payload: data,
++        status: 'queued',
++      },
++    });
++
++    await this.smsQueue.add(
++      SMS_JOB,
++      { notificationId: notification.id },
++      {
++        attempts: 3,
++        backoff: { type: 'exponential', delay: 5_000 },
++        removeOnComplete: 200,
++        removeOnFail: 500,
++      },
++    );
++
++    this.logger.debug(
++      `اعلان در صف قرار گرفت — id: ${notification.id} | template: ${template} | to: ${to} | body: ${body}`,
++    );
++
++    return notification;
++  }
++}
++
+
+diff --git a/apps/api/src/modules/notifications/notifications.module.ts b/apps/api/src/modules/notifications/notifications.module.ts
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/apps/api/src/modules/notifications/notifications.module.ts
+@@ -0,0 +1,66 @@
++import { Module } from '@nestjs/common';
++import { ConfigService } from '@nestjs/config';
++import { BullModule } from '@nestjs/bullmq';
++import { KavenegarProvider } from './providers/kavenegar.provider';
++import { MockSmsProvider } from './providers/mock-sms.provider';
++import { SMS_PROVIDER, SmsProvider } from './providers/sms-provider.interface';
++import { NotificationService } from './notification.service';
++import { NotificationTemplatesService } from './templates.service';
++import { SendSmsProcessor, SMS_QUEUE } from './jobs/send-sms.processor';
++import { OrderNotificationListener } from './listeners/order.listener';
++import { PaymentNotificationListener } from './listeners/payment.listener';
++import { OtpNotificationListener } from './listeners/otp.listener';
++
++/**
++ * انتخاب پروایدر پیامک بر اساس پیکربندی
++ *
++ * در حالت زیر از پروایدر mock استفاده می‌شود:
++ *  - `NODE_ENV` برابر production نباشد (محیط توسعه/تست)
++ *  - `KAVENEGAR_API_KEY` تنظیم نشده باشد
++ *
++ * این تابع از ماژول export شده تا بشود آن را مستقل تست کرد.
++ */
++export function chooseSmsProvider(
++  config: ConfigService,
++  kavenegar: KavenegarProvider,
++  mock: MockSmsProvider,
++): SmsProvider {
++  const isProduction = config.get<string>('NODE_ENV') === 'production';
++  const hasApiKey = Boolean(config.get<string>('KAVENEGAR_API_KEY'));
++
++  if (!isProduction || !hasApiKey) return mock;
++  return kavenegar;
++}
++
++/**
++ * ماژول اعلان‌ها — ارسال پیامک مبتنی بر قالب از طریق صف
++ *
++ * رابط عمومی این ماژول `NotificationService` است؛ listenerها رویدادهای
++ * دامنه را دریافت کرده و از طریق آن پیامک می‌فرستند. پروایدر پیامک با
++ * توکن `SMS_PROVIDER` تزریق می‌شود تا جایگزینی آن در محیط‌های مختلف
++ * تنها از طریق پیکربندی ممکن باشد.
++ *
++ * `EventEmitterModule` و `BullModule.forRoot` باید در `AppModule` ثبت
++ * شده باشند — این ماژول فقط صف `sms` را ثبت می‌کند.
++ */
++@Module({
++  imports: [BullModule.registerQueue({ name: SMS_QUEUE })],
++  providers: [
++    NotificationService,
++    NotificationTemplatesService,
++    SendSmsProcessor,
++    OrderNotificationListener,
++    PaymentNotificationListener,
++    OtpNotificationListener,
++    KavenegarProvider,
++    MockSmsProvider,
++    {
++      provide: SMS_PROVIDER,
++      useFactory: chooseSmsProvider,
++      inject: [ConfigService, KavenegarProvider, MockSmsProvider],
++    },
++  ],
++  exports: [NotificationService, NotificationTemplatesService, SMS_PROVIDER],
++})
++export class NotificationsModule {}
++
+
+diff --git a/apps/api/src/modules/notifications/providers/kavenegar.provider.ts b/apps/api/src/modules/notifications/providers/kavenegar.provider.ts
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/apps/api/src/modules/notifications/providers/kavenegar.provider.ts
+@@ -0,0 +1,67 @@
++import { Injectable, Logger } from '@nestjs/common';
++import { ConfigService } from '@nestjs/config';
++import { SendResult, SmsProvider } from './sms-provider.interface';
++
++/** آدرس پیش‌فرض وب‌سرویس کاونگر */
++const KAVENEGAR_BASE_URL = 'https://api.kavenegar.com/v1';
++
++/**
++ * پروایدر پیامک کاونگر — ارسال واقعی از طریق وب‌سرویس کاونگر
++ *
++ * مسیر وب‌سرویس: `POST {baseUrl}/{apiKey}/sms/send.json` با پارامترهای
++ * `receptor`، `sender` و `message` (form-encoded). کلید API و شماره فرستنده
++ * از متغیرهای محیطی `KAVENEGAR_API_KEY` و `KAVENEGAR_SENDER` خوانده می‌شوند.
++ *
++ * در صورت خرابی شبکه یا پاسخ ناموفق، خطا پرتاب می‌شود تا صف BullMQ طبق
++ * تنظیمات retry دوباره تلاش کند.
++ */
++@Injectable()
++export class KavenegarProvider implements SmsProvider {
++  private readonly logger = new Logger(KavenegarProvider.name);
++  readonly name = 'kavenegar';
++
++  constructor(private readonly config: ConfigService) {}
++
++  async send(to: string, body: string): Promise<SendResult> {
++    const apiKey = this.config.get<string>('KAVENEGAR_API_KEY');
++    if (!apiKey) throw new Error('KAVENEGAR_API_KEY تنظیم نشده است');
++
++    const baseUrl = this.config.get<string>('KAVENEGAR_BASE_URL') ?? KAVENEGAR_BASE_URL;
++    const sender =
++      this.config.get<string>('KAVENEGAR_SENDER') ?? '';
++
++    const params = new URLSearchParams({ receptor: to, message: body });
++    if (sender) params.append('sender', sender);
++
++    const response = await fetch(`${baseUrl}/${apiKey}/sms/send.json`, {
++      method: 'POST',
++      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
++      body: params.toString(),
++    });
++
++    if (!response.ok) {
++      const text = await response.text();
++      throw new Error(`خطای کاونگر (HTTP ${response.status}): ${text}`);
++    }
++
++    const payload = (await response.json()) as {
++      return?: { status?: number; message?: string };
++      entries?: Array<{ messageid?: number }>;
++    };
++
++    const status = payload.return?.status;
++    const providerRef = payload.entries?.[0]?.messageid?.toString();
++
++    if (status !== 200) {
++      return {
++        status: 'failed',
++        providerRef,
++        error: payload.return?.message ?? `کد وضعیت کاونگر: ${status}`,
++      };
++    }
++
++    this.logger.log(`📱 پیامک کاونگر به ${to} ارسال شد — ref: ${providerRef ?? 'نامشخص'}`);
++    return { status: 'sent', providerRef };
++  }
++}
++
+
+diff --git a/apps/api/src/modules/notifications/providers/mock-sms.provider.ts b/apps/api/src/modules/notifications/providers/mock-sms.provider.ts
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/apps/api/src/modules/notifications/providers/mock-sms.provider.ts
+@@ -0,0 +1,23 @@
++import { Injectable, Logger } from '@nestjs/common';
++import { randomUUID } from 'node:crypto';
++import { SendResult, SmsProvider } from './sms-provider.interface';
++
++/**
++ * پروایدر پیامک mock — فقط در محیط development فعال می‌شود
++ *
++ * هیچ پیامکی واقعاً ارسال نمی‌کند؛ متن پیام را در کنسول لاگ می‌کند تا
++ * توسعه و تست دستی بدون اتصال به کاونگر ممکن باشد. رکورد ارسال در
++ * دیتابیس توسط {@link SendSmsProcessor} ذخیره می‌شود.
++ */
++@Injectable()
++export class MockSmsProvider implements SmsProvider {
++  private readonly logger = new Logger(MockSmsProvider.name);
++  readonly name = 'mock';
++
++  async send(to: string, body: string): Promise<SendResult> {
++    const providerRef = `mock-${randomUUID()}`;
++    this.logger.log(`📨 [MOCK SMS] به ${to}:\n${body}\n└─ ref: ${providerRef}`);
++    return { status: 'sent', providerRef };
++  }
++}
++
+
+diff --git a/apps/api/src/modules/notifications/providers/sms-provider.interface.ts b/apps/api/src/modules/notifications/providers/sms-provider.interface.ts
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/apps/api/src/modules/notifications/providers/sms-provider.interface.ts
+@@ -0,0 +1,33 @@
++/** کانال‌های ارسال اعلان — فعلاً فقط پیامک پیاده‌سازی شده */
++export type NotificationChannel = 'sms' | 'email';
++
++/** وضعیت رکورد اعلان در دیتابیس */
++export type NotificationStatus = 'queued' | 'sent' | 'failed';
++
++/** نتیجه ارسال توسط پروایدر */
++export interface SendResult {
++  /** مرجع پیام در پروایدر — برای رهگیری تحویل */
++  providerRef?: string;
++  /** وضعیت نهایی ارسال */
++  status: 'sent' | 'failed';
++  /** پیام خطا در صورت شکست */
++  error?: string;
++}
++
++/**
++ * پروایدر ارسال پیامک
++ *
++ * دو پیاده‌سازی دارد:
++ *  - {@link KavenegarProvider} برای production
++ *  - {@link MockSmsProvider} برای development (فقط لاگ می‌کند)
++ */
++export interface SmsProvider {
++  /** نام پروایدر — برای لاگ و تشخیص */
++  readonly name: string;
++  /** ارسال متن پیامک به گیرنده */
++  send(to: string, body: string): Promise<SendResult>;
++}
++
++/** توکن تزریق پروایدر پیامک انتخاب‌شده بر اساس محیط */
++export const SMS_PROVIDER = 'SMS_PROVIDER';
++
+
+diff --git a/apps/api/src/modules/notifications/templates.service.ts b/apps/api/src/modules/notifications/templates.service.ts
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/apps/api/src/modules/notifications/templates.service.ts
+@@ -0,0 +1,78 @@
++import { Injectable, Logger, NotFoundException } from '@nestjs/common';
++import { NotificationTemplate } from '@yuma/db';
++import { PrismaService } from '../../database/prisma.service';
++import { NotificationChannel } from './providers/sms-provider.interface';
++
++/** زبان پیش‌فرض قالب‌ها — فعلاً فقط فارسی داریم */
++const DEFAULT_LOCALE = 'fa';
++
++/** الگوی متغیرهای داخل قالب: {{name}} یا {{ name }} */
++const VARIABLE_PATTERN = /\{\{\s*(\w+)\s*\}\}/g;
++
++/**
++ * سرویس قالب‌های اعلان
++ *
++ * قالب‌ها از جدول `notification_templates` بارگذاری و با متغیرهای
++ * دریافتی جایگزین می‌شوند. برای جلوگیری از کوئری تکراری، قالب‌های
++ * فعال در حافظه کش می‌شوند (با کلید code|channel|locale).
++ */
++@Injectable()
++export class NotificationTemplatesService {
++  private readonly logger = new Logger(NotificationTemplatesService.name);
++  private readonly cache = new Map<string, NotificationTemplate>();
++
++  constructor(private readonly prisma: PrismaService) {}
++
++  /** بارگذاری آخرین نسخهٔ فعال یک قالب */
++  async load(
++    code: string,
++    channel: NotificationChannel = 'sms',
++    locale: string = DEFAULT_LOCALE,
++  ): Promise<NotificationTemplate> {
++    const cacheKey = `${code}|${channel}|${locale}`;
++
++    const cached = this.cache.get(cacheKey);
++    if (cached) return cached;
++
++    const template = await this.prisma.notificationTemplate.findFirst({
++      where: { code, channel, locale, isActive: true },
++      orderBy: { version: 'desc' },
++    });
++
++    if (!template) {
++      throw new NotFoundException(
++        `قالب اعلان پیدا نشد: code=${code} channel=${channel} locale=${locale}`,
++      );
++    }
++
++    this.cache.set(cacheKey, template);
++    return template;
++  }
++
++  /** جایگزینی متغیرهای {{name}} با مقادیر داده‌شده */
++  render(body: string, data: Record<string, string | number>): string {
++    return body.replace(VARIABLE_PATTERN, (match, key: string) => {
++      const value = data[key];
++      if (value === undefined || value === null) {
++        this.logger.warn(`متغیر قالب تعریف نشده: ${key}`);
++        return '';
++      }
++      return String(value);
++    });
++  }
++
++  /** بارگذاری قالب و رندر نهایی موضوع و متن */
++  async renderTemplate(
++    code: string,
++    data: Record<string, string | number>,
++    channel: NotificationChannel = 'sms',
++    locale: string = DEFAULT_LOCALE,
++  ): Promise<{ subject: string | null; body: string }> {
++    const template = await this.load(code, channel, locale);
++    return {
++      subject: template.subject ? this.render(template.subject, data) : null,
++      body: this.render(template.body, data),
++    };
++  }
++}
++
+
+diff --git a/packages/db/prisma/migrations/20261010120000_add_notifications/migration.sql b/packages/db/prisma/migrations/20261010120000_add_notifications/migration.sql
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/packages/db/prisma/migrations/20261010120000_add_notifications/migration.sql
+@@ -0,0 +1,54 @@
++-- CreateTable
++CREATE TABLE "notification_templates" (
++    "id" TEXT NOT NULL,
++    "code" TEXT NOT NULL,
++    "channel" TEXT NOT NULL,
++    "locale" TEXT NOT NULL DEFAULT 'fa',
++    "version" INTEGER NOT NULL DEFAULT 1,
++    "subject" TEXT,
++    "body" TEXT NOT NULL,
++    "is_active" BOOLEAN NOT NULL DEFAULT true,
++    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
++
++    CONSTRAINT "notification_templates_pkey" PRIMARY KEY ("id")
++);
++
++-- CreateIndex
++CREATE UNIQUE INDEX "notification_templates_code_key" ON "notification_templates"("code");
++
++-- CreateIndex
++CREATE UNIQUE INDEX "notification_templates_code_channel_locale_version_key" ON "notification_templates"("code", "channel", "locale", "version");
++
++-- CreateTable
++CREATE TABLE "notifications" (
++    "id" TEXT NOT NULL,
++    "user_id" TEXT,
++    "order_id" TEXT,
++    "channel" TEXT NOT NULL,
++    "template_code" TEXT NOT NULL,
++    "recipient" TEXT NOT NULL,
++    "payload" JSONB NOT NULL,
++    "status" TEXT NOT NULL DEFAULT 'queued',
++    "provider_ref" TEXT,
++    "error_message" TEXT,
++    "attempts" INTEGER NOT NULL DEFAULT 0,
++    "sent_at" TIMESTAMP(3),
++    "delivered_at" TIMESTAMP(3),
++    "read_at" TIMESTAMP(3),
++    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
++
++    CONSTRAINT "notifications_pkey" PRIMARY KEY ("id")
++);
++
++-- CreateIndex
++CREATE INDEX "notifications_user_id_created_at_idx" ON "notifications"("user_id", "created_at");
++
++-- CreateIndex
++CREATE INDEX "notifications_status_created_at_idx" ON "notifications"("status", "created_at");
++
++-- AddForeignKey
++ALTER TABLE "notifications" ADD CONSTRAINT "notifications_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE;
++
++-- AddForeignKey
++ALTER TABLE "notifications" ADD CONSTRAINT "notifications_order_id_fkey" FOREIGN KEY ("order_id") REFERENCES "orders"("id") ON DELETE SET NULL ON UPDATE CASCADE;
++
+
+diff --git a/packages/db/prisma/schema.prisma b/packages/db/prisma/schema.prisma
+index c27c5af..7ea3ac0 100644
+--- a/packages/db/prisma/schema.prisma
++++ b/packages/db/prisma/schema.prisma
++  action     String
++  entityType String   @map("entity_type")
++  entityId   String?  @map("entity_id")
++  /** وضعیت موجودیت پیش از تغییر */
++  before     Json?
++  /** وضعیت موجودیت پس از تغییر */
++  after      Json?
++  ip         String?
++  userAgent  String?  @map("user_agent")
++  /** شناسه‌ی یکتای درخواست — برای ردیابی یک زنجیره‌ی کامل در لاگ‌ها */
++  requestId  String?  @map("request_id")
++  createdAt  DateTime @default(now()) @map("created_at")
++
++  actor User? @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
++
++  @@index([actorId, createdAt])
++  @@index([entityType, entityId, createdAt])
++  @@index([action, createdAt])
++  @@map("audit_logs")
++}
++
++model Setting {
++  id          String   @id @default(uuid())
++  /** کلید یکتای تنظیم — مثلاً brand.primaryColor */
++  key         String   @unique
++  /** مقدار تنظیم — هر نوع JSON معتبر */
++  value       Json
++  /** دسته‌بندی: brand, contact, payment, order, sms, features */
++  category    String
++  /** آیا این تنظیم برای کاربران عمومی قابل مشاهده است؟ */
++  isPublic    Boolean  @default(false) @map("is_public")
++  /** کاربری که آخرین بار این تنظیم را تغییر داده */
++  updatedById String?  @map("updated_by_id")
++  createdAt   DateTime @default(now()) @map("created_at")
++  updatedAt   DateTime @updatedAt @map("updated_at")
++
++  updatedBy User? @relation("SettingUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
++
++  @@index([category])
++  @@index([isPublic])
++  @@map("settings")
++}
++
+ model Payment {
+   id          String   @id @default(uuid())
+   orderId     String   @map("order_id")
+@@ -319,3 +379,55 @@
+   @@index([orderId])
+   @@map("payments")
+ }
++
++model NotificationTemplate {
++  id        String   @id @default(uuid())
++  /** کد قالب — مثلاً order_requested */
++  code      String   @unique
++  /** کانال ارسال: sms | email */
++  channel   String
++  /** زبان قالب — فعلاً فقط fa */
++  locale    String   @default("fa")
++  /** نسخه‌ی قالب — امکان نگه‌داری چند نسخه از یک قالب */
++  version   Int      @default(1)
++  /** موضوع پیام — برای ایمیل؛ پیامک موضوع ندارد */
++  subject   String?
++  /** متن قالب با متغیرهای {{name}} */
++  body      String
++  isActive  Boolean  @default(true) @map("is_active")
++  createdAt DateTime @default(now()) @map("created_at")
++
++  @@unique([code, channel, locale, version])
++  @@map("notification_templates")
++}
++
++model Notification {
++  id           String    @id @default(uuid())
++  userId       String?   @map("user_id")
++  orderId      String?   @map("order_id")
++  /** کانال ارسال: sms | email */
++  channel      String
++  /** کد قالب استفاده‌شده */
++  templateCode String    @map("template_code")
++  /** گیرنده: موبایل یا ایمیل */
++  recipient    String
++  /** متغیرهای جایگزین‌شده در قالب */
++  payload      Json
++  /** queued | sent | failed */
++  status       String    @default("queued")
++  /** مرجع پروایدر — مثلاً شناسه پیامک کاونگر */
++  providerRef  String?   @map("provider_ref")
++  errorMessage String?   @map("error_message")
++  attempts     Int       @default(0)
++  sentAt       DateTime? @map("sent_at")
++  deliveredAt  DateTime? @map("delivered_at")
++  readAt       DateTime? @map("read_at")
++  createdAt    DateTime  @default(now()) @map("created_at")
++
++  user  User?   @relation("UserNotifications", fields: [userId], references: [id], onDelete: SetNull)
++  order Order?  @relation("OrderNotifications", fields: [orderId], references: [id], onDelete: SetNull)
++
++  @@index([userId, createdAt])
++  @@index([status, createdAt])
++  @@map("notifications")
++}
+
+diff --git a/packages/db/prisma/seed.ts b/packages/db/prisma/seed.ts
+index 938ffad..d78873b 100644
+--- a/packages/db/prisma/seed.ts
++++ b/packages/db/prisma/seed.ts
++      body: 'یوما | سفارش {{trackingCode}} تحویل داده شد 📦\nقالی شما توسط سفیر ما جمع‌آوری و به کارگاه منتقل شد.',
++    },
++    {
++      code: 'quotation_sent',
++      subject: null,
++      body: 'یوما | پیش‌فاکتور سفارش {{trackingCode}} آماده است 🧾\nلطفاً در اپلیکیشن برآورد قیمت را بررسی و تأیید کنید.',
++    },
++    {
++      code: 'order_in_cleaning',
++      subject: null,
++      body: 'یوما | سفارش {{trackingCode}} در حال شستشو است 🫧\nقالی شما در کارگاه در حال پاک‌سازی است. پس از کنترل کیفیت، تحویل را هماهنگ می‌کنیم.',
++    },
++    {
++      code: 'order_ready',
++      subject: null,
++      body: 'یوما | سفارش {{trackingCode}} آماده تحویل است ✨\nقالی شما تمیز و بسته‌بندی شده است؛ به‌زودی سفیر ما آن را برایتان می‌آورد.',
++    },
++    {
++      code: 'order_delivered',
++      subject: null,
++      body: 'یوما | سفارش {{trackingCode}} تحویل شد 🎉\nامیدواریم از نتیجه راضی باشید. منتظر دیدن دوباره‌تان هستیم.',
++    },
++    {
++      code: 'payment_success',
++      subject: null,
++      body: 'یوما | پرداخت سفارش {{trackingCode}} دریافت شد 💳\nمبلغ {{amount}} تومان با کد پیگیری {{referenceId}} تأیید شد. سفارش شما در حال پردازش است.',
++    },
++    {
++      code: 'payment_failed',
++      subject: null,
++      body: 'یوما | پرداخت سفارش {{trackingCode}} ناموفق بود ⚠️\nمبلغ {{amount}} تومان دریافت نشد. دلیل: {{reason}}\nلطفاً دوباره تلاش کنید.',
++    },
++  ];
++
++  for (const t of NOTIFICATION_TEMPLATES) {
++    await prisma.notificationTemplate.upsert({
++      where: { code: t.code },
++      update: { body: t.body, isActive: true },
++      create: {
++        code: t.code,
++        channel: 'sms',
++        locale: 'fa',
++        version: 1,
++        subject: t.subject,
++        body: t.body,
++        isActive: true,
++      },
++    });
++  }
++
++  // ۷) تنظیمات پیش‌فرض سیستم — upsert بر اساس کلید یکتا
++  const DEFAULT_SETTINGS: Array<{
++    key: string;
++    value: string | number | boolean;
++    isPublic: boolean;
++  }> = [
++    { key: 'brand.name', value: 'قالیشویی یوما', isPublic: true },
++    { key: 'brand.primaryColor', value: '#4f46e5', isPublic: true },
++    { key: 'contact.phone', value: '04133333333', isPublic: true },
++    { key: 'contact.email', value: 'support@yuma.local', isPublic: true },
++    { key: 'payment.commissionRate', value: 10, isPublic: false },
++    { key: 'order.cancelWindowMinutes', value: 30, isPublic: false },
++    { key: 'order.otpTTLSeconds', value: 120, isPublic: false },
++    { key: 'order.minPrice', value: 150000, isPublic: false },
++    { key: 'sms.enabled', value: true, isPublic: false },
++    { key: 'features.mobile', value: true, isPublic: true },
++  ];
++
++  for (const s of DEFAULT_SETTINGS) {
++    await prisma.setting.upsert({
++      where: { key: s.key },
++      update: {},
++      create: {
++        key: s.key,
++        value: s.value,
++        category: s.key.split('.')[0]!,
++        isPublic: s.isPublic,
++      },
++    });
++  }
++
+   console.log(
+-    '✅ Seed کامل شد — ادمین: %s | مدیر: %s | مشتری: %s | سفیر: %s',
++    '✅ Seed کامل شد — ادمین: %s | مدیر: %s | مشتری: %s | سفیر: %s | تنظیمات: %d | قالب‌ها: %d',
+     admin.mobile,
+     managerUser.mobile,
+     customer.mobile,
+     driverUser.mobile,
++    DEFAULT_SETTINGS.length,
++    NOTIFICATION_TEMPLATES.length,
+   );
+ }
+ 
+
+@@ -61,14 +61,28 @@
+ async function main() {
+   console.log('🌱 Seeding...');
+ 
+-  // ۱) ادمین سیستم
+   const admin = await prisma.user.upsert({
+     where: { mobile: '09120000000' },
+-    update: {},
++    // update خالی نیست: اگر ردیف از قبل با نقش دیگری وجود داشت، admin می‌شود
+     create: {
+       mobile: '09120000000',
+       fullName: 'مدیر سیستم',
+@@ -157,12 +158,110 @@ async function main() {
+     },
+   });
+ 
++  // ۶) قالب‌های پیامک فارسی — مسیر سفارش و پرداخت
++  // متغیرها داخل آکولاد در زمان ارسال جایگزین می‌شوند: {{trackingCode}}
++  const NOTIFICATION_TEMPLATES: Array<{
++    code: string;
++    subject: string | null;
++    body: string;
++  }> = [
++    {
++      code: 'order_requested',
++      subject: null,
++      body: 'یوما | سفارش {{trackingCode}} ثبت شد ✅\nما به‌زودی آن را تحویل می‌گیریم. از ثبت سفارش شما سپاسگزاریم {{customerName}}.',
++    },
++    {
++      code: 'order_picked_up',
++      subject: null,
+
+diff --git a/apps/api/.env.example b/apps/api/.env.example
+index 952a33c..8c3de55 100644
+--- a/apps/api/.env.example
++++ b/apps/api/.env.example
++# آدرس وب‌سرویس — فقط برای درگاه‌های معادل کاونگر قابل تغییر است
++# KAVENEGAR_BASE_URL="https://api.kavenegar.com/v1"
++
+ # ---- ذخیره‌سازی ابری (MinIO در docker-compose) ----
+ S3_ENDPOINT="http://localhost:9000"
+ S3_ACCESS_KEY="minioadmin"
+
+@@ -1,7 +1,12 @@
+ # ---- سرور ----
+ NODE_ENV=development
+ PORT=3001
+@@ -19,6 +20,14 @@ SMTP_USER=
+ SMTP_PASSWORD=
+ MAIL_FROM="یوما <no-reply@yuma.ir>"
+ 
++# ---- پیامک (کاونگر) ----
++# در محیط development پروایدر mock فعال است و این مقادیر لازم نیستند.
++# در production اگر کلید تنظیم نشده باشد، همچنان mock استفاده می‌شود.
++KAVENEGAR_API_KEY=
++KAVENEGAR_SENDER=""
+
+diff --git a/apps/api/src/app.module.ts b/apps/api/src/app.module.ts
+index 9fa28d0..74f2b44 100644
+--- a/apps/api/src/app.module.ts
++++ b/apps/api/src/app.module.ts
++        );
++        return {
++          connection: {
++            host: url.hostname,
++            port: Number(url.port || 6379),
++            password: url.password || undefined,
++            db: Number(url.pathname.slice(1)) || 0,
++          },
++        };
++      },
++    }),
+     PrismaModule,
+     RedisModule,
+     AuthModule,
+@@ -1,18 +1,28 @@
+ import { Module } from '@nestjs/common';
+-import { ConfigModule } from '@nestjs/config';
++import { ConfigModule, ConfigService } from '@nestjs/config';
+ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+ import { APP_GUARD } from '@nestjs/core';
++import { EventEmitterModule } from '@nestjs/event-emitter';
++import { BullModule } from '@nestjs/bullmq';
+ import { AppController } from './app.controller';
+ import { HealthController } from './health/health.controller';
+ import { PrismaModule } from './database/prisma.module';
+@@ -16,6 +18,9 @@ import { PricingModule } from './modules/pricing/pricing.module';
+ import { PaymentsModule } from './modules/payments/payments.module';
+ import { PaymentModule } from './shared/payment/payment.module';
+ import { MailModule } from './common/mail/mail.module';
++import { NotificationsModule } from './modules/notifications/notifications.module';
+ 
+ @Module({
+   imports: [
+@@ -30,6 +35,24 @@ import { MailModule } from './common/mail/mail.module';
+         limit: 100, // حداکثر ۱۰۰ درخواست در دقیقه برای هر IP
+       },
+     ]),
++    EventEmitterModule.forRoot(),
++    BullModule.forRootAsync({
++      inject: [ConfigService],
++      // اتصال به Redis از طریق REDIS_URL — همان اتصالی که سرویس کش استفاده می‌کند
++      useFactory: (config: ConfigService) => {
++        const url = new URL(
++          config.get<string>('REDIS_URL') ?? 'redis://localhost:6379',
+@@ -42,6 +65,7 @@
+     PaymentsModule,
+     PaymentModule,
+     MailModule,
++    NotificationsModule,
+   ],
+   controllers: [AppController, HealthController],
+   providers: [
+
+diff --git a/apps/api/src/modules/orders/orders.service.ts b/apps/api/src/modules/orders/orders.service.ts
+index 73d9828..c8044bd 100644
+--- a/apps/api/src/modules/orders/orders.service.ts
++++ b/apps/api/src/modules/orders/orders.service.ts
+    * لغو سفارش توسط مشتری — فقط صاحب سفارش و فقط قبل از تحویل.
+    * وضعیت به cancelled تغییر کرده و دلیل لغو در تاریخچه لاگ می‌شود.
+    */
+-  async cancelOrder(actor: AuthUser, orderId: string, reason: string) {
++  async cancelOrder(
++    actor: AuthUser,
++    orderId: string,
++    reason: string,
++    req?: Request,
++  ) {
+     const order = await this.prisma.order.findUnique({
+       where: { id: orderId },
+       select: { customerId: true, status: true },
+   }
+ 
+   // ───────────────── سفیر ─────────────────
+   ) {
+     return this.findOrderOrThrow(orderId, { status: true }).then((order) =>
+-      this.applyTransition(orderId, order.status, toStatus, actor, note),
++      this.applyTransition(orderId, order.status, toStatus, actor, note, req),
+     );
+   }
+ 
++      await this.auditOrder(
++        req,
++        'status-change',
++        orderId,
++        { status: flowFrom },
++        { status: to },
++        actor,
++      );
++
+       return updated;
+     });
++
++    // بعد از commit تراکنش، رویداد تغییر وضعیت را برای اعلان‌ها منتشر کن —
++    // ارسال پیامک روی وضعیت سفارش اثر ندارد و شکست آن rollback نمی‌شود
++    this.eventEmitter.emit('order.status_changed', {
++      orderId: updated.id,
++      trackingCode: updated.trackingCode,
++      customerId: updated.customerId,
++      from: flowFrom,
++      to,
++      actorId: actor.id,
++      actorRole: actor.role,
++    });
++
++    return updated;
+   }
+ 
+   /**
+@@ -2,52 +2,70 @@
+   BadRequestException,
+   ForbiddenException,
+   Injectable,
+   NotFoundException,
+ } from '@nestjs/common';
++import { EventEmitter2 } from '@nestjs/event-emitter';
+ import { randomInt } from 'crypto';
+ import { Prisma } from '@yuma/db';
+ import type { OrderFlowStatus } from '@yuma/types';
+ import { PrismaService } from '../../database/prisma.service';
+ import { S3Service } from '../../shared/storage/s3.service';
+ import { faMessages } from '../../common/messages.fa';
+ import type { AuthUser } from '../../common/decorators/current-user.decorator';
+ import { CreateOrderDto } from './dto/create-order.dto';
+ import { AdminListOrdersDto } from './dto/admin-list-orders.dto';
+ import {
+@@ -54,10 +59,14 @@ const ADMIN_ORDER_INCLUDE = {
+  */
+ @Injectable()
+ export class OrdersService {
++
+   constructor(
+     private readonly prisma: PrismaService,
+     private readonly s3: S3Service,
+     private readonly stateMachine: OrderStateMachine,
++    private readonly eventEmitter: EventEmitter2,
+   ) {}
+ 
+   /**
+@@ -67,7 +76,7 @@ export class OrdersService {
+    * `idempotencyKey` تضمین می‌کند ارسال دوبارهٔ یک درخواست،
+    * سفارش جدیدی نسازد و همان سفارش قبلی برگردانده شود.
+    */
+-  async createOrder(actor: AuthUser, dto: CreateOrderDto) {
+     // ۱) idempotency — سفارشِ همین کلید را برمی‌گردانیم تا ثبت تکراری نشود
+     const existing = await this.prisma.order.findUnique({
+       where: { idempotencyKey: dto.idempotencyKey },
+@@ -120,7 +129,7 @@ export class OrdersService {
+     const delivery = dto.deliveryAddress;
+ 
+     // ۴) ثبت در یک تراکنش: سفارش + اقلام + تاریخچه + پیش‌فاکتور اولیه
+-    return this.prisma.$transaction(async (tx) => {
++    const created = await this.prisma.$transaction(async (tx) => {
+       const order = await tx.order.create({
+         data: {
+           trackingCode,
+@@ -172,8 +181,25 @@ export class OrdersService {
+         include: { items: true },
+       });
+ 
++      // ثبت رویداد ثبت سفارش در ممیزی — قبل: ندارد (سفارش تازه ساخته شده)
++
+       return order;
+     });
++
++    // بعد از commit، رویداد ثبت سفارش را برای اعلان‌ها منتشر می‌کنیم
++    // (from: null یعنی وضعیت اولیه — قالب order_requested)
++    this.eventEmitter.emit('order.status_changed', {
++      orderId: created.id,
++      trackingCode: created.trackingCode,
++      customerId: created.customerId,
++      from: null,
++      to: 'requested',
++      actorId: actor.id,
++      actorRole: actor.role,
++    });
++
++    return created;
+   }
+ 
+   /** لیست سفارشات مشتری — فقط سفارش‌های خودش، مرتب بر اساس جدیدترین */
+@@ -237,7 +263,12 @@ export class OrdersService {
+
+diff --git a/apps/api/src/modules/auth/services/otp.service.ts b/apps/api/src/modules/auth/services/otp.service.ts
+index eb83c2d..c168195 100644
+--- a/apps/api/src/modules/auth/services/otp.service.ts
++++ b/apps/api/src/modules/auth/services/otp.service.ts
+@@ -5,9 +5,9 @@ import {
+   Injectable,
+   Logger,
+ } from '@nestjs/common';
++import { EventEmitter2 } from '@nestjs/event-emitter';
+ import { normalizeMobile } from '@yuma/validators';
+ import { RedisService } from '../../../redis/redis.service';
+-import { MailService } from '../../../common/mail/mail.service';
+ import { faMessages } from '../../../common/messages.fa';
+ 
+ /** اعتبار کد: ۱۰ دقیقه */
+@@ -42,7 +42,7 @@ export class OtpService {
+ 
+   constructor(
+     private readonly redis: RedisService,
+-    private readonly mail: MailService,
++    private readonly eventEmitter: EventEmitter2,
+   ) {}
+ 
+   /**
+@@ -59,8 +59,9 @@ export class OtpService {
+     const code = this.generateCode();
+     await this.redis.set(`otp:${normalized}`, code, OTP_TTL_SECONDS);
+ 
+-    // ارسال کد (در dev فقط log می‌شود، در prod ایمیل/SMS)
+-    await this.mail.sendOtp(`${normalized}@yuma.local`, code);
++    // ارسال کد از طریق رویداد — listener مربوطه پیامک را ارسال می‌کند
++    // (در dev پروایدر mock فقط کد را لاگ می‌کند)
++    this.eventEmitter.emit('otp.requested', { mobile: normalized, code });
+ 
+     if (process.env.NODE_ENV !== 'production') {
+       this.logger.warn(`🔑 DEV OTP for ${mobile}: ${code}`);
+
+diff --git a/apps/api/src/modules/auth/otp.service.spec.ts b/apps/api/src/modules/auth/otp.service.spec.ts
+index b1f05bd..9848801 100644
+--- a/apps/api/src/modules/auth/otp.service.spec.ts
++++ b/apps/api/src/modules/auth/otp.service.spec.ts
+@@ -17,11 +17,12 @@ const redis = {
+   },
+ };
+ 
+-/** شبیه‌سازی MailService — در تست‌ها چیزی ارسال نمی‌شود */
+-const mail = {
+-  sent: [] as Array<{ to: string; code: string }>,
+-  async sendOtp(to: string, code: string): Promise<void> {
+-    this.sent.push({ to, code });
++/** شبیه‌سازی EventEmitter2 — رویدادهای انتشارشده را نگه می‌دارد */
++const eventEmitter = {
++  emitted: [] as Array<{ event: string; payload: unknown }>,
++  emit(event: string, payload: unknown): boolean {
++    this.emitted.push({ event, payload });
++    return true;
+   },
+ };
+ 
+@@ -30,8 +31,8 @@ describe('OtpService', () => {
+ 
+   beforeEach(() => {
+     redis.store.clear();
+-    mail.sent.length = 0;
+-    service = new OtpService(redis as never, mail as never);
++    eventEmitter.emitted.length = 0;
++    service = new OtpService(redis as never, eventEmitter as never);
+   });
+ 
+   it('کد ۶ رقمی تولید و با انقضای ۶۰۰ ثانیه ذخیره می‌شود', async () => {
+@@ -39,9 +40,10 @@ describe('OtpService', () => {
+ 
+     expect(devCode).toMatch(/^\d{6}$/);
+     expect(redis.store.get('otp:09123456789')).toEqual({ value: devCode, ttl: 600 });
+-    expect(mail.sent).toContainEqual({
+-      to: '09123456789@yuma.local',
+-      code: devCode,
++    // کد از طریق رویداد otp.requested برای ارسال پیامک منتشر می‌شود
++    expect(eventEmitter.emitted).toContainEqual({
++      event: 'otp.requested',
++      payload: { mobile: '09123456789', code: devCode },
+     });
+   });
+ 

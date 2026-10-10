@@ -12,7 +12,17 @@ export const queryKeys = {
   customers: ['customers'] as const,
   laundries: ['laundries'] as const,
   drivers: ['drivers'] as const,
+  /** لیست پرسنل — /admin/users/staff */
+  staff: ['users', 'staff'] as const,
   payments: ['payments'] as const,
+  /** لیست تسویه‌ی دوره‌ای کارگاه‌ها — /admin/settlements */
+  settlements: ['settlements'] as const,
+  /** لیست رویدادهای ممیزی — /admin/audit-log */
+  auditLog: ['audit-log'] as const,
+  /** آمار رویدادهای ممیزی */
+  auditLogStats: ['audit-log', 'stats'] as const,
+  /** نقشه‌ی تنظیمات سیستم — /admin/settings */
+  settings: ['settings'] as const,
   /** لیست پیش‌فاکتورها */
   quotations: ['quotations'] as const,
   quotation: (orderId: string) => ['quotations', orderId] as const,
@@ -21,6 +31,10 @@ export const queryKeys = {
     revenue: ['dashboard', 'revenue'] as const,
   },
   reports: ['reports'] as const,
+  /** لیست تیکت‌های پشتیبانی — /support/tickets */
+  supportTickets: ['support', 'tickets'] as const,
+  /** جزئیات یک تیکت پشتیبانی */
+  supportTicket: (id: string) => ['support', 'tickets', id] as const,
   profile: ['profile'] as const,
 } as const;
 

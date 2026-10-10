@@ -1,5 +1,14 @@
-import { Body, Controller, Get, Param, Patch, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Query,
+  Req,
+} from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import type { Request } from 'express';
 import {
   AuthUser,
   CurrentUser,
@@ -54,12 +63,14 @@ export class AdminOrdersController {
     @CurrentUser() user: AuthUser,
     @Param('id') orderId: string,
     @Body() dto: ChangeStatusDto,
+    @Req() req: Request,
   ) {
     const order = await this.ordersService.adminUpdateOrderStatus(
       user,
       orderId,
       dto.toStatus,
       dto.note,
+      req,
     );
     return { ok: true, order };
   }
@@ -102,11 +113,13 @@ export class AdminOrdersController {
     @CurrentUser() user: AuthUser,
     @Param('id') orderId: string,
     @Body() dto: CancelOrderDto,
+    @Req() req: Request,
   ) {
     const order = await this.ordersService.cancelOrderAdmin(
       user,
       orderId,
       dto.reason,
+      req,
     );
     return { ok: true, order };
   }

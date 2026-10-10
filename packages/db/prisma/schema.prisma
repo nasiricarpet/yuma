@@ -10,8 +10,13 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+/// نقش‌های کاربری — RBAC؛ باید با `USER_ROLES` در @yuma/types همگان بماند
 enum UserRole {
   admin
+  manager
+  expert
+  support
+  finance
   laundry_manager
   laundry_user
   driver
@@ -51,6 +56,67 @@ enum VehicleType {
   van
 }
 
+/// حساب‌های دفتر کل — مدل دوطرفه‌ی مالی پلتفرم
+enum LedgerAccount {
+  /// بدهی مشتری به پلتفرم
+  customer_receivable
+  /// حساب ترانزیت درگاه پرداخت — تا زمان تسویه با بانک
+  gateway_clearing
+  /// درآمد کارمزد پلتفرم
+  platform_revenue
+  /// بدهی پلتفرم به کارگاه
+  workshop_payable
+  /// مالیات بر ارزش افزوده‌ی قابل پرداخت به سازمان امور مالیاتی
+  tax_payable
+}
+
+enum LedgerDirection {
+  debit
+  credit
+}
+
+/// وضعیت تسویه‌ی دوره‌ای کارگاه
+enum SettlementStatus {
+  pending
+  paid
+}
+
+/// دسته‌بندی تیکت پشتیبانی
+enum TicketCategory {
+  order_issue
+  payment_issue
+  delivery_issue
+  quality_issue
+  account_issue
+  other
+}
+
+/// اولویت تیکت — تعیین‌کننده‌ی مهلت پاسخ اولیه (SLA)
+enum TicketPriority {
+  low
+  medium
+  high
+  urgent
+}
+
+/// وضعیت تیکت پشتیبانی
+enum TicketStatus {
+  /// باز — در انتظار پاسخ پشتیبان
+  open
+  /// در حال پیگیری — پشتیبان در حال رسیدگی است
+  pending_agent
+  /// حل‌شده — مشتری تأیید نکرده است
+  resolved
+  /// بسته‌شده
+  closed
+}
+
+/// دیدمندی پیام تیکت — پیام داخلی برای مشتری قابل مشاهده نیست
+enum MessageVisibility {
+  public
+  internal
+}
+
 model User {
   id           String    @id @default(uuid())
   mobile       String    @unique // فرمت نرمال: 09xxxxxxxxx
@@ -60,6 +126,7 @@ model User {
   passwordHash String
   role         UserRole  @default(customer)
   isActive     Boolean   @default(true)
+  deletedAt    DateTime? @map("deleted_at")
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @updatedAt @map("updated_at")
 
@@ -68,6 +135,12 @@ model User {
   customerOrders Order[]         @relation("CustomerOrders")
   refreshTokens  RefreshToken[]
   addresses      UserAddress[]
+  updatedSettings Setting[]      @relation("SettingUpdatedBy")
+  auditLogs      AuditLog[]      @relation("AuditActor")
+  notifications  Notification[] @relation("UserNotifications")
+  supportTickets  SupportTicket[] @relation("CustomerTickets")
+  assignedTickets SupportTicket[] @relation("AgentTickets")
+  ticketMessages  SupportMessage[] @relation("TicketMessages")
 
   @@map("users")
 }
@@ -118,9 +191,10 @@ model Laundry {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  owner    User        @relation("LaundryOwner", fields: [ownerId], references: [id])
-  orders   Order[]
-  services LaundryService[]
+  owner       User        @relation("LaundryOwner", fields: [ownerId], references: [id])
+  orders      Order[]
+  services    LaundryService[]
+  settlements WorkshopSettlement[]
 
   @@map("laundries")
 }
@@ -216,6 +290,9 @@ model Order {
   media         OrderMedia[]
   quotation     Quotation?
   payments      Payment[]
+  notifications Notification[] @relation("OrderNotifications")
+  ledgerEntries LedgerEntry[]
+  supportTickets SupportTicket[]
 
   @@index([customerId])
   @@index([laundryId, status])
@@ -303,6 +380,56 @@ model Quotation {
   @@map("quotations")
 }
 
+model AuditLog {
+  id         String   @id @default(cuid())
+  /** شناسه کاربری که عمل را انجام داده — برای رویدادهای سیستمی NULL است */
+  actorId    String?  @map("actor_id")
+  /** نقش کاربر در لحظه‌ی انجام عمل — برای انطباق با داده‌ی تاریخی رشته‌ی ساده است */
+  actorRole  String?  @map("actor_role")
+  /** نوع عمل: create | update | delete | login | logout */
+  action     String
+  entityType String   @map("entity_type")
+  entityId   String?  @map("entity_id")
+  /** وضعیت موجودیت پیش از تغییر */
+  before     Json?
+  /** وضعیت موجودیت پس از تغییر */
+  after      Json?
+  ip         String?
+  userAgent  String?  @map("user_agent")
+  /** شناسه‌ی یکتای درخواست — برای ردیابی یک زنجیره‌ی کامل در لاگ‌ها */
+  requestId  String?  @map("request_id")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  actor User? @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([actorId, createdAt])
+  @@index([entityType, entityId, createdAt])
+  @@index([action, createdAt])
+  @@map("audit_logs")
+}
+
+model Setting {
+  id          String   @id @default(uuid())
+  /** کلید یکتای تنظیم — مثلاً brand.primaryColor */
+  key         String   @unique
+  /** مقدار تنظیم — هر نوع JSON معتبر */
+  value       Json
+  /** دسته‌بندی: brand, contact, payment, order, sms, features */
+  category    String
+  /** آیا این تنظیم برای کاربران عمومی قابل مشاهده است؟ */
+  isPublic    Boolean  @default(false) @map("is_public")
+  /** کاربری که آخرین بار این تنظیم را تغییر داده */
+  updatedById String?  @map("updated_by_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  updatedBy User? @relation("SettingUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+
+  @@index([category])
+  @@index([isPublic])
+  @@map("settings")
+}
+
 model Payment {
   id          String   @id @default(uuid())
   orderId     String   @map("order_id")
@@ -314,8 +441,164 @@ model Payment {
   method      String   @default("online")
   createdAt   DateTime @default(now()) @map("created_at")
 
-  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  order        Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  ledgerEntries LedgerEntry[]
 
   @@index([orderId])
   @@map("payments")
+}
+
+model NotificationTemplate {
+  id        String   @id @default(uuid())
+  /** کد قالب — مثلاً order_requested */
+  code      String   @unique
+  /** کانال ارسال: sms | email */
+  channel   String
+  /** زبان قالب — فعلاً فقط fa */
+  locale    String   @default("fa")
+  /** نسخه‌ی قالب — امکان نگه‌داری چند نسخه از یک قالب */
+  version   Int      @default(1)
+  /** موضوع پیام — برای ایمیل؛ پیامک موضوع ندارد */
+  subject   String?
+  /** متن قالب با متغیرهای {{name}} */
+  body      String
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([code, channel, locale, version])
+  @@map("notification_templates")
+}
+
+model Notification {
+  id           String    @id @default(uuid())
+  userId       String?   @map("user_id")
+  orderId      String?   @map("order_id")
+  /** کانال ارسال: sms | email */
+  channel      String
+  /** کد قالب استفاده‌شده */
+  templateCode String    @map("template_code")
+  /** گیرنده: موبایل یا ایمیل */
+  recipient    String
+  /** متغیرهای جایگزین‌شده در قالب */
+  payload      Json
+  /** queued | sent | failed */
+  status       String    @default("queued")
+  /** مرجع پروایدر — مثلاً شناسه پیامک کاونگر */
+  providerRef  String?   @map("provider_ref")
+  errorMessage String?   @map("error_message")
+  attempts     Int       @default(0)
+  sentAt       DateTime? @map("sent_at")
+  deliveredAt  DateTime? @map("delivered_at")
+  readAt       DateTime? @map("read_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  user  User?   @relation("UserNotifications", fields: [userId], references: [id], onDelete: SetNull)
+  order Order?  @relation("OrderNotifications", fields: [orderId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+  @@map("notifications")
+}
+
+model LedgerEntry {
+  /// شناسه‌ی عددی بزرگ — ترتیب ثبت قطعی را تضمین می‌کند
+  id          BigInt          @id @default(autoincrement())
+  /// گروه ثبت — همه‌ی قلم‌های یک رویداد مالی یک گروه را اشتراک می‌زنند
+  entryGroup  String          @map("entry_group")
+  orderId     String?         @map("order_id")
+  paymentId   String?         @map("payment_id")
+  account     LedgerAccount
+  direction   LedgerDirection
+  /// مبلغ به ریال — واحد خردی مالی
+  amountMinor BigInt          @map("amount_minor")
+  currency    String          @default("IRR")
+  /** مرجع پرداخت/تسویه — کد رهگیری درگاه یا شناسه‌ی تسویه */
+  reference   String?
+  description String?
+  createdAt   DateTime        @default(now()) @map("created_at")
+
+  order   Order?   @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  payment Payment? @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+
+  @@index([entryGroup])
+  @@index([orderId])
+  @@index([paymentId])
+  @@index([account, createdAt])
+  @@map("ledger_entries")
+}
+
+model WorkshopSettlement {
+  id              String           @id @default(uuid())
+  workshopId      String           @map("workshop_id")
+  /** شروع دوره — اولین روز ماه میلادی (YYYY-MM) */
+  periodStart     DateTime         @map("period_start")
+  /** پایان دوره — انحصاری (اولین روز ماه بعد) */
+  periodEnd       DateTime         @map("period_end")
+  /** جمع کل پرداخت‌های کارگاه در دوره (ریال) */
+  grossMinor      BigInt           @map("gross_minor")
+  /** کارمزد پلتفرم در دوره (ریال) */
+  commissionMinor BigInt           @map("commission_minor")
+  /** مبلغ خالص قابل پرداخت به کارگاه (ریال) */
+  netPayableMinor BigInt           @map("net_payable_minor")
+  status          SettlementStatus @default(pending)
+  paidAt          DateTime?        @map("paid_at")
+  /** مرجع پرداخت بانکی تسویه — مثلاً شناسه‌ی حواله */
+  reference       String?
+  createdAt       DateTime         @default(now()) @map("created_at")
+
+  workshop Laundry @relation(fields: [workshopId], references: [id], onDelete: Cascade)
+
+  /** یک کارگاه در هر دوره فقط یک تسویه دارد */
+  @@unique([workshopId, periodStart, periodEnd])
+  @@index([status, periodStart])
+  @@map("workshop_settlements")
+}
+
+model SupportTicket {
+  id          String         @id @default(uuid())
+  /** سفارش مرتبط — اختیاری؛ تیکت‌های عمومی سفارش ندارند */
+  orderId     String?        @map("order_id")
+  customerId  String         @map("customer_id")
+  category    TicketCategory
+  priority    TicketPriority @default(medium)
+  status      TicketStatus   @default(open)
+  subject     String
+  /** پشتیبان مسئول رسیدگی — خالی یعنی تخصیص نیافته */
+  assignedToId String?       @map("assigned_to_id")
+  /** مهلت پاسخ اولیه — نقض آن از طریق SLAJob هشدار داده می‌شود */
+  slaDueAt    DateTime?      @map("sla_due_at")
+  firstResponseAt DateTime?  @map("first_response_at")
+  resolvedAt  DateTime?      @map("resolved_at")
+  /** امتیاز رضایت مشتری — ۱ تا ۵، پس از حل ثبت می‌شود */
+  satisfaction Int?
+  createdAt   DateTime       @default(now()) @map("created_at")
+  updatedAt   DateTime       @updatedAt @map("updated_at")
+
+  order      Order?          @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  customer   User            @relation("CustomerTickets", fields: [customerId], references: [id], onDelete: Cascade)
+  assignedTo User?           @relation("AgentTickets", fields: [assignedToId], references: [id], onDelete: SetNull)
+  messages   SupportMessage[]
+
+  @@index([customerId, createdAt])
+  @@index([assignedToId, status])
+  @@index([status, priority])
+  @@index([slaDueAt])
+  @@map("support_tickets")
+}
+
+model SupportMessage {
+  /// شناسه‌ی عددی بزرگ — ترتیب پیام‌ها در یک تیکت را تضمین می‌کند
+  id           BigInt            @id @default(autoincrement())
+  ticketId     String            @map("ticket_id")
+  /** فرستنده — برای پیام‌های سیستمی NULL است */
+  senderUserId String?           @map("sender_user_id")
+  visibility   MessageVisibility @default(public)
+  body         String
+  createdAt    DateTime          @default(now()) @map("created_at")
+
+  ticket     SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  senderUser User?         @relation("TicketMessages", fields: [senderUserId], references: [id], onDelete: SetNull)
+
+  @@index([ticketId, createdAt])
+  @@map("support_messages")
 }

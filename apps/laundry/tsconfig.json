@@ -16,7 +16,7 @@
     "incremental": true,
     "plugins": [{ "name": "next" }],
     "paths": {
-      "@/*": ["./*"],
+      "@/*": ["./src/*"],
       "@yuma/persian": ["../../packages/persian/src/index.ts"],
       "@yuma/validators": ["../../packages/validators/src/index.ts"],
       "@yuma/types": ["../../packages/types/src/index.ts"],

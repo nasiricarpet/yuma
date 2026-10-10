@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { AuditModule } from '../audit-log/audit.module';
 import { OrdersController } from './orders.controller';
 import { WorkshopOrdersController } from './workshop-orders.controller';
 import { DriverOrdersController } from './driver-orders.controller';
@@ -17,7 +18,8 @@ import { DriversModule } from '../drivers/drivers.module';
  * سراسری در AuthModule ثبت شده است.
  */
 @Module({
-  imports: [StorageModule, LaundriesModule, DriversModule],
+  // AuditModule برای ثبت رویدادهای ثبت، تغییر وضعیت و لغو سفارش
+  imports: [AuditModule, StorageModule, LaundriesModule, DriversModule],
   controllers: [
     OrdersController,
     WorkshopOrdersController,

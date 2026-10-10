@@ -61,10 +61,11 @@ const DEMO_PASSWORD_HASH =
 async function main() {
   console.log('🌱 Seeding...');
 
-  // ۱) ادمین سیستم
+  // ۱) ادمین سیستم — وجود و نقش admin تضمین می‌شود
   const admin = await prisma.user.upsert({
     where: { mobile: '09120000000' },
-    update: {},
+    // update خالی نیست: اگر ردیف از قبل با نقش دیگری وجود داشت، admin می‌شود
+    update: { role: 'admin' },
     create: {
       mobile: '09120000000',
       fullName: 'مدیر سیستم',
@@ -157,12 +158,110 @@ async function main() {
     },
   });
 
+  // ۶) قالب‌های پیامک فارسی — مسیر سفارش و پرداخت
+  // متغیرها داخل آکولاد در زمان ارسال جایگزین می‌شوند: {{trackingCode}}
+  const NOTIFICATION_TEMPLATES: Array<{
+    code: string;
+    subject: string | null;
+    body: string;
+  }> = [
+    {
+      code: 'order_requested',
+      subject: null,
+      body: 'یوما | سفارش {{trackingCode}} ثبت شد ✅\nما به‌زودی آن را تحویل می‌گیریم. از ثبت سفارش شما سپاسگزاریم {{customerName}}.',
+    },
+    {
+      code: 'order_picked_up',
+      subject: null,
+      body: 'یوما | سفارش {{trackingCode}} تحویل داده شد 📦\nقالی شما توسط سفیر ما جمع‌آوری و به کارگاه منتقل شد.',
+    },
+    {
+      code: 'quotation_sent',
+      subject: null,
+      body: 'یوما | پیش‌فاکتور سفارش {{trackingCode}} آماده است 🧾\nلطفاً در اپلیکیشن برآورد قیمت را بررسی و تأیید کنید.',
+    },
+    {
+      code: 'order_in_cleaning',
+      subject: null,
+      body: 'یوما | سفارش {{trackingCode}} در حال شستشو است 🫧\nقالی شما در کارگاه در حال پاک‌سازی است. پس از کنترل کیفیت، تحویل را هماهنگ می‌کنیم.',
+    },
+    {
+      code: 'order_ready',
+      subject: null,
+      body: 'یوما | سفارش {{trackingCode}} آماده تحویل است ✨\nقالی شما تمیز و بسته‌بندی شده است؛ به‌زودی سفیر ما آن را برایتان می‌آورد.',
+    },
+    {
+      code: 'order_delivered',
+      subject: null,
+      body: 'یوما | سفارش {{trackingCode}} تحویل شد 🎉\nامیدواریم از نتیجه راضی باشید. منتظر دیدن دوباره‌تان هستیم.',
+    },
+    {
+      code: 'payment_success',
+      subject: null,
+      body: 'یوما | پرداخت سفارش {{trackingCode}} دریافت شد 💳\nمبلغ {{amount}} تومان با کد پیگیری {{referenceId}} تأیید شد. سفارش شما در حال پردازش است.',
+    },
+    {
+      code: 'payment_failed',
+      subject: null,
+      body: 'یوما | پرداخت سفارش {{trackingCode}} ناموفق بود ⚠️\nمبلغ {{amount}} تومان دریافت نشد. دلیل: {{reason}}\nلطفاً دوباره تلاش کنید.',
+    },
+  ];
+
+  for (const t of NOTIFICATION_TEMPLATES) {
+    await prisma.notificationTemplate.upsert({
+      where: { code: t.code },
+      update: { body: t.body, isActive: true },
+      create: {
+        code: t.code,
+        channel: 'sms',
+        locale: 'fa',
+        version: 1,
+        subject: t.subject,
+        body: t.body,
+        isActive: true,
+      },
+    });
+  }
+
+  // ۷) تنظیمات پیش‌فرض سیستم — upsert بر اساس کلید یکتا
+  const DEFAULT_SETTINGS: Array<{
+    key: string;
+    value: string | number | boolean;
+    isPublic: boolean;
+  }> = [
+    { key: 'brand.name', value: 'قالیشویی یوما', isPublic: true },
+    { key: 'brand.primaryColor', value: '#4f46e5', isPublic: true },
+    { key: 'contact.phone', value: '04133333333', isPublic: true },
+    { key: 'contact.email', value: 'support@yuma.local', isPublic: true },
+    { key: 'payment.commissionRate', value: 10, isPublic: false },
+    { key: 'order.cancelWindowMinutes', value: 30, isPublic: false },
+    { key: 'order.otpTTLSeconds', value: 120, isPublic: false },
+    { key: 'order.minPrice', value: 150000, isPublic: false },
+    { key: 'sms.enabled', value: true, isPublic: false },
+    { key: 'features.mobile', value: true, isPublic: true },
+  ];
+
+  for (const s of DEFAULT_SETTINGS) {
+    await prisma.setting.upsert({
+      where: { key: s.key },
+      update: {},
+      create: {
+        key: s.key,
+        value: s.value,
+        category: s.key.split('.')[0]!,
+        isPublic: s.isPublic,
+      },
+    });
+  }
+
   console.log(
-    '✅ Seed کامل شد — ادمین: %s | مدیر: %s | مشتری: %s | سفیر: %s',
+    '✅ Seed کامل شد — ادمین: %s | مدیر: %s | مشتری: %s | سفیر: %s | تنظیمات: %d | قالب‌ها: %d',
     admin.mobile,
     managerUser.mobile,
     customer.mobile,
     driverUser.mobile,
+    DEFAULT_SETTINGS.length,
+    NOTIFICATION_TEMPLATES.length,
   );
 }
 

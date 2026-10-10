@@ -5,12 +5,14 @@ import {
   Param,
   Patch,
   Post,
+  Req,
   UploadedFiles,
   UseInterceptors,
 } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
 import { ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
+import type { Request } from 'express';
 import {
   AuthUser,
   CurrentUser,
@@ -44,8 +46,12 @@ export class OrdersController {
   @Post()
   @ApiOperation({ summary: 'ثبت سفارش جدید توسط مشتری' })
   @Roles('customer')
-  async create(@CurrentUser() user: AuthUser, @Body() dto: CreateOrderDto) {
-    const order = await this.ordersService.createOrder(user, dto);
+  async create(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: CreateOrderDto,
+    @Req() req: Request,
+  ) {
+    const order = await this.ordersService.createOrder(user, dto, req);
     return { ok: true, order };
   }
 
@@ -80,8 +86,14 @@ export class OrdersController {
     @CurrentUser() user: AuthUser,
     @Param('id') orderId: string,
     @Body() dto: CancelOrderDto,
+    @Req() req: Request,
   ) {
-    const order = await this.ordersService.cancelOrder(user, orderId, dto.reason);
+    const order = await this.ordersService.cancelOrder(
+      user,
+      orderId,
+      dto.reason,
+      req,
+    );
     return { ok: true, order };
   }
 

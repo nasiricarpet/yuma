@@ -77,7 +77,7 @@ export class ZarinpalService {
   async verifyPayment(
     amount: number,
     authority: string,
-  ): Promise<{ verified: boolean; referenceId: string }> {
+  ): Promise<{ verified: boolean; referenceId: string; message?: string }> {
     const referenceId = randomBytes(8).toString('hex').toUpperCase();
 
     this.logger.log(

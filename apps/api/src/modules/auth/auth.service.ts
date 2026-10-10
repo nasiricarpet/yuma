@@ -20,6 +20,15 @@ export interface AuthResult {
 }
 
 /**
+ * خروجی مسیر ورود — توکن‌ها به اضافه‌ی شناسه و نقش کاربری که
+ * همین حالا احراز هویت شده (برای ثبت رویداد ممیزی ورود).
+ */
+export interface VerifyResult extends AuthResult {
+  userId: string;
+  role: string;
+}
+
+/**
  * سرویس احراز هویت — تجمیع منطق OTP، توکن و نشست
  * توکن تمدید به صورت هش‌شده در دیتابیس نگهداری و در هر بار استفاده چرخش می‌کند
  */
@@ -33,7 +42,7 @@ export class AuthService {
   ) {}
 
   /** تأیید کد یک‌بار مصرف و صدور توکن — کاربر جدید با نقش پیش‌فرض customer ساخته می‌شود */
-  async verifyOtp(mobile: string, code: string): Promise<AuthResult> {
+  async verifyOtp(mobile: string, code: string): Promise<VerifyResult> {
     await this.otpService.verify(mobile, code);
 
     const user = await this.prisma.user.upsert({
@@ -42,7 +51,8 @@ export class AuthService {
       create: { mobile, fullName: '', passwordHash: '', role: 'customer' },
     });
 
-    return this.issueTokens(user.id, user.role);
+    const tokens = await this.issueTokens(user.id, user.role);
+    return { ...tokens, userId: user.id, role: user.role };
   }
 
   /** چرخش توکن — توکن قدیمی ابطال و جفت توکن جدید صادر می‌شود */

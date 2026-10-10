@@ -2,6 +2,7 @@
 // پس خودش هم باید Client Component باشد.
 "use client";
 
+import Link from 'next/link';
 import { formatCurrency, formatJalaliDate, toPersianDigits } from '@yuma/persian';
 import { ORDER_STATUS_LABELS, type OrderStatus } from '@yuma/types';
 import { JalaliDatePicker } from '@yuma/ui';
@@ -28,6 +29,12 @@ export default function LaundryDashboard() {
       <header className="mb-8 flex flex-wrap items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold">صف سفارش‌های امروز</h1>
+          <Link
+            href="/assessment"
+            className="mt-2 inline-block text-sm font-medium text-brand hover:underline"
+          >
+            ارزیابی سفارش‌ها ←
+          </Link>
           <p className="mt-1 text-sm text-slate-500">
             {formatJalaliDate(new Date(), 'dddd D MMMM YYYY')}
           </p>

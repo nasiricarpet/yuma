@@ -31,6 +31,16 @@ export const faMessages = {
   laundry: {
     notFound: 'پروفایل قالیشویی شما یافت نشد',
   },
+  support: {
+    ticketNotFound: 'تیکت مورد نظر یافت نشد',
+    ticketClosed: 'این تیکت بسته شده است. برای ادامه یک تیکت جدید ثبت کنید',
+    agentNotFound: 'کارشناس پشتیبانی مورد نظر یافت نشد',
+    notSupportAgent: 'این کاربر نقش پشتیبانی ندارد',
+    agentInactive: 'این کاربر غیرفعال است و نمی‌تواند تیکت دریافت کند',
+    invalidTransition: 'تغییر وضعیت تیکت از حالت فعلی امکان‌پذیر نیست',
+    messageRequired: 'متن پیام الزامی است',
+    alreadyAssigned: 'این تیکت قبلاً به این کارشناس تخصیص داده شده است',
+  },
   driver: {
     notFound: 'پروفایل سفیر شما یافت نشد',
   },
@@ -51,6 +61,13 @@ export const faMessages = {
     addressLimit: 'حداکثر ۵ آدرس می‌توانید ثبت کنید',
     addressNotFound: 'آدرس مورد نظر یافت نشد',
     nationalCodeExists: 'کد ملی قبلاً توسط کاربر دیگری ثبت شده است',
+    mobileExists: 'شماره موبایل قبلاً ثبت شده است',
+    emailExists: 'ایمیل قبلاً توسط کاربر دیگری ثبت شده است',
+    cannotDeleteSelf: 'نمی‌توانید حساب کاربری خودتان را حذف کنید',
+    cannotChangeOwnRole: 'نمی‌توانید نقش حساب کاربری خودتان را تغییر دهید',
+    cannotDeleteLastAdmin: 'آخرین مدیر سیستم را نمی‌توان حذف کرد',
+    alreadyDeleted: 'این کاربر قبلاً حذف شده است',
+    lastAdmin: 'آخرین مدیر سیستم را نمی‌توان تغییر داد',
   },
 } as const;
 

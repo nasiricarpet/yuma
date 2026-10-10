@@ -3,6 +3,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
+import { AuditModule } from '../audit-log/audit.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { OtpService } from './services/otp.service';
@@ -18,6 +19,8 @@ import { RolesGuard } from './guards/roles.guard';
  */
 @Module({
   imports: [
+    // AuditModule برای ثبت رویدادهای ورود و خروج در ممیزی
+    AuditModule,
     PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.registerAsync({
       inject: [ConfigService],

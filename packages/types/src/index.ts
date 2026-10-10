@@ -2,7 +2,25 @@
  * @yuma/types — انواع مشترک بین API، وب و موبایل
  */
 
-export type UserRole = 'admin' | 'laundry_manager' | 'laundry_user' | 'driver' | 'customer';
+/**
+ * نقش‌های کاربری (RBAC) — منبع یکتای تعریف نقش‌ها در کل پروژه.
+ *
+ * این لیست باید با enum `UserRole` در `packages/db/prisma/schema.prisma` همگام
+ * بماند؛ تست roles.spec.ts تطابق این دو را چک می‌کند.
+ */
+export const USER_ROLES = [
+  'admin',
+  'manager',
+  'expert',
+  'support',
+  'finance',
+  'laundry_manager',
+  'laundry_user',
+  'driver',
+  'customer',
+] as const;
+
+export type UserRole = (typeof USER_ROLES)[number];
 
 export type OrderStatus =
   | 'pending' // ثبت‌شده، در انتظار تخصیص

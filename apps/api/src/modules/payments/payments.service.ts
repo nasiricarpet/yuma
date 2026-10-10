@@ -5,6 +5,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../../database/prisma.service';
 import { faMessages } from '../../common/messages.fa';
 import { OrderStateMachine } from '../orders/state-machine/order-state-machine';
@@ -25,6 +26,7 @@ export class PaymentsService {
     private readonly prisma: PrismaService,
     private readonly zarinpal: ZarinpalService,
     private readonly stateMachine: OrderStateMachine,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   /**
@@ -89,7 +91,9 @@ export class PaymentsService {
   async verifyCallback(authority: string) {
     const payment = await this.prisma.payment.findUnique({
       where: { authority },
-      include: { order: { select: { status: true } } },
+      include: {
+        order: { select: { status: true, trackingCode: true } },
+      },
     });
 
     if (!payment) throw new NotFoundException(faMessages.payment.notFound);
@@ -109,6 +113,16 @@ export class PaymentsService {
         data: { status: 'failed' },
       });
 
+      // اطلاع‌رسانی شکست پرداخت — قبل از throw تا مسیر کال‌بک متوقف نشود
+      this.eventEmitter.emit('payment.failed', {
+        paymentId: payment.id,
+        orderId: payment.orderId,
+        trackingCode: payment.order.trackingCode,
+        customerId: payment.customerId,
+        amount: payment.amount,
+        reason: result.message ?? null,
+      });
+
       throw new BadRequestException(faMessages.payment.verifyFailed);
     }
 
@@ -118,7 +132,7 @@ export class PaymentsService {
     }
 
     // تراکنش اتمیک: موفقیت پرداخت + کد پیگیری + انتقال سفارش به washing
-    return this.prisma.$transaction(async (tx) => {
+    const updated = await this.prisma.$transaction(async (tx) => {
       const updated = await tx.payment.update({
         where: { id: payment.id },
         data: { status: 'success', referenceId: result.referenceId },
@@ -145,5 +159,17 @@ export class PaymentsService {
 
       return updated;
     });
+
+    // بعد از commit، رویداد موفقیت پرداخت را برای اعلان‌ها منتشر می‌کنیم
+    this.eventEmitter.emit('payment.captured', {
+      paymentId: payment.id,
+      orderId: payment.orderId,
+      trackingCode: payment.order.trackingCode,
+      customerId: payment.customerId,
+      amount: payment.amount,
+      referenceId: result.referenceId,
+    });
+
+    return updated;
   }
 }

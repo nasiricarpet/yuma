@@ -23,6 +23,7 @@ function createPrismaMock() {
   const users = new Map<string, any>();
   const addresses = new Map<string, any>();
   let addressSeq = 0;
+  let userSeq = 0;
   const transactions: unknown[][] = [];
 
   const userAddress = {
@@ -118,8 +119,66 @@ function createPrismaMock() {
         (a) => a.userId === where.id && !a.deletedAt,
       ) };
     }),
-    findMany: jest.fn(async () => [...users.values()]),
-    count: jest.fn(async () => users.size),
+    findFirst: jest.fn(
+      async ({
+        where,
+        select,
+      }: {
+        where: any;
+        select?: any;
+      }) => {
+        const item = users.get(where.id);
+        if (!item) return null;
+        // کاربران حذف‌شده (soft) معادل «موجود نیست» هستند
+        if (where.deletedAt === null && item.deletedAt) return null;
+
+        let picked: Record<string, unknown> = { ...item };
+        if (select) {
+          picked = {};
+          for (const key of Object.keys(select)) {
+            if (!select[key]) continue;
+            picked[key] = item[key];
+          }
+          if (select.addresses) {
+            picked.addresses = [...addresses.values()].filter(
+              (a) => a.userId === where.id && !a.deletedAt,
+            );
+          }
+        }
+        return picked;
+      },
+    ),
+    findMany: jest.fn(async ({ where }: { where?: any } = {}) => {
+      let items = [...users.values()];
+      if (where?.deletedAt === null) items = items.filter((u) => !u.deletedAt);
+      if (where?.role) {
+        const roles: string[] = Array.isArray(where.role)
+          ? where.role
+          : where.role.in ?? [where.role];
+        items = items.filter((u) => roles.includes(u.role));
+      }
+      return items;
+    }),
+    count: jest.fn(async ({ where }: { where?: any } = {}) => {
+      let items = [...users.values()];
+      if (where?.deletedAt === null) items = items.filter((u) => !u.deletedAt);
+      if (where?.deletedAt?.not === null) items = items.filter((u) => u.deletedAt);
+      if (where?.role) items = items.filter((u) => u.role === where.role);
+      if (typeof where?.isActive === 'boolean')
+        items = items.filter((u) => u.isActive === where.isActive);
+      return items.length;
+    }),
+    create: jest.fn(async ({ data }: { data: any }) => {
+      const id = `user-${++userSeq}`;
+      const record = {
+        id,
+        deletedAt: null,
+        createdAt: new Date(),
+        ...data,
+      };
+      users.set(id, record);
+      return record;
+    }),
     update: jest.fn(async ({ where, data }: { where: any; data: any }) => {
       const item = users.get(where.id);
       if (!item) throw prismaError('P2025');
@@ -127,6 +186,17 @@ function createPrismaMock() {
         if (value !== undefined) item[key] = value;
       }
       return item;
+    }),
+    updateMany: jest.fn(async ({ where, data }: { where: any; data: any }) => {
+      const item = users.get(where.id);
+      if (!item) return { count: 0 };
+      // حذف تکراری روی کاربر قبلاً حذف‌شده اثری ندارد
+      if (where.deletedAt === null && item.deletedAt) return { count: 0 };
+
+      for (const [key, value] of Object.entries(data)) {
+        if (value !== undefined) item[key] = value;
+      }
+      return { count: 1 };
     }),
   };
 
@@ -148,15 +218,39 @@ function createPrismaMock() {
   };
 }
 
+/**
+ * پارامترهای `AuditService.log` — برای بررسی رویدادهای ثبت‌شده در تست‌ها.
+ * مطابق قرارداد ماژول ممیزی: (action, entityType, entityId, before, after)
+ */
+type AuditLogArgs = [
+  action: string,
+  entityType: string,
+  entityId: string | null,
+  before: Record<string, unknown> | null,
+  after: Record<string, unknown> | null,
+];
+
+/**
+ * سرویس ممیزی جعلی — فقط `log` فراخوانی می‌شود. آرگومان‌ها برای
+ * بررسی رویدادهای ثبت‌شده نگه داشته می‌شوند.
+ */
+function createAuditMock() {
+  return {
+    log: jest.fn<Promise<void>, AuditLogArgs>(),
+  };
+}
+
 describe('UsersService', () => {
   let service: UsersService;
   let prisma: ReturnType<typeof createPrismaMock>;
+  let audit: ReturnType<typeof createAuditMock>;
 
   const USER_ID = 'user-1';
 
   beforeEach(() => {
     prisma = createPrismaMock();
-    service = new UsersService(prisma as never);
+    audit = createAuditMock();
+    service = new UsersService(prisma as never, audit as never);
 
     prisma._users.set(USER_ID, {
       id: USER_ID,
@@ -166,6 +260,7 @@ describe('UsersService', () => {
       nationalCode: null,
       role: 'customer',
       isActive: true,
+      deletedAt: null,
       createdAt: new Date(),
     });
   });
@@ -430,6 +525,377 @@ describe('UsersService', () => {
       await expect(
         service.updateUserStatus('nope', { isActive: true }),
       ).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('عملیات ادمین — مدیریت کاربران', () => {
+    it('کاربر جدید با نقش می‌سازد', async () => {
+      const created = await service.createUser({
+        mobile: '09121112222',
+        fullName: 'کاربر جدید',
+        role: 'laundry_manager',
+      });
+
+      expect(created.role).toBe('laundry_manager');
+
+      const stored = [...prisma._users.values()].find(
+        (u) => u.mobile === '09121112222',
+      );
+      expect(stored?.fullName).toBe('کاربر جدید');
+      // کاربر ساخته‌شده توسط ادمین رمز عبور ندارد — ورود با OTP
+      expect(stored?.passwordHash).toBe('');
+    });
+
+    it('موبایل تکراری ۴۰۹ می‌دهد', async () => {
+      jest
+        .spyOn(prisma.user, 'create')
+        .mockRejectedValueOnce(prismaError('P2002'));
+
+      await expect(
+        service.createUser({
+          mobile: '09123456789',
+          fullName: 'تکراری',
+          role: 'customer',
+        }),
+      ).rejects.toThrow(ConflictException);
+    });
+
+    it('فقط فیلدهای ارسال‌شده را در ویرایش تغییر می‌دهد', async () => {
+      await service.updateUser('admin-1', USER_ID, { fullName: 'یوما ویرایش‌شده' });
+
+      const stored = prisma._users.get(USER_ID);
+      expect(stored?.fullName).toBe('یوما ویرایش‌شده');
+      expect(stored?.mobile).toBe('09123456789');
+    });
+
+    it('تکرار کد ملی/ایمیل در ویرایش ۴۰۹ می‌دهد', async () => {
+      jest
+        .spyOn(prisma.user, 'update')
+        .mockRejectedValueOnce(prismaError('P2002'));
+
+      await expect(
+        service.updateUser('admin-1', USER_ID, { email: 'dup@yuma.local' }),
+      ).rejects.toThrow(ConflictException);
+    });
+
+    it('ویرایش کاربر ناموجود ۴۰۴ می‌دهد', async () => {
+      await expect(
+        service.updateUser('admin-1', 'nope', { fullName: 'فلان' }),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('کاربر را soft-delete می‌کند و غیرفعال می‌کند', async () => {
+      await service.deleteUser('admin-1', USER_ID);
+
+      const stored = prisma._users.get(USER_ID);
+      expect(stored?.deletedAt).toBeInstanceOf(Date);
+      expect(stored?.isActive).toBe(false);
+    });
+
+    it('حذف حساب خودمان ۴۰۰ می‌دهد', async () => {
+      await expect(service.deleteUser(USER_ID, USER_ID)).rejects.toThrow(
+        BadRequestException,
+      );
+
+      expect(prisma._users.get(USER_ID)?.deletedAt).toBeNull();
+    });
+
+    it('حذف کاربر ناموجود ۴۰۴ می‌دهد', async () => {
+      await expect(service.deleteUser('admin-1', 'nope')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+
+    it('حذف کاربر قبلاً حذف‌شده ۴۰۴ می‌دهد', async () => {
+      await service.deleteUser('admin-1', USER_ID);
+
+      // حذف دوباره نباید موفق (یا idempotent) باشد
+      await expect(service.deleteUser('admin-1', USER_ID)).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+
+    it('کاربر حذف‌شده از لیست و جزئیات خارج می‌شود', async () => {
+      await service.deleteUser('admin-1', USER_ID);
+
+      const list = await service.listUsers({ page: 1, limit: 10 });
+      expect(list.items).toHaveLength(0);
+
+      await expect(service.getUserById(USER_ID)).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+
+    it('رمز عبور ارسال‌شده را هش می‌کند و بدون رمز، خالی می‌ماند', async () => {
+      await service.createUser({
+        mobile: '09121113333',
+        fullName: 'کاربر با رمز',
+        role: 'manager',
+        password: 'secret1234',
+      });
+
+      const withPassword = [...prisma._users.values()].find(
+        (u) => u.mobile === '09121113333',
+      );
+      // رمز خام نباید به شکل متن ذخیره شود
+      expect(withPassword?.passwordHash).not.toBe('secret1234');
+      expect(withPassword?.passwordHash).not.toBe('');
+
+      const bcrypt = await import('bcrypt');
+      expect(
+        await bcrypt.compare('secret1234', withPassword!.passwordHash),
+      ).toBe(true);
+
+      // بدون رمز — مانند مسیر OTP، passwordHash خالی است
+      await service.createUser({
+        mobile: '09121114444',
+        fullName: 'کاربر بدون رمز',
+        role: 'support',
+      });
+      const noPassword = [...prisma._users.values()].find(
+        (u) => u.mobile === '09121114444',
+      );
+      expect(noPassword?.passwordHash).toBe('');
+    });
+
+    it('نقش کاربر را تغییر می‌دهد', async () => {
+      const updated = await service.changeUserRole(USER_ID, {
+        role: 'driver',
+      });
+
+      expect(updated.role).toBe('driver');
+      expect(prisma._users.get(USER_ID)?.role).toBe('driver');
+    });
+
+    it('تغییر نقش کاربر ناموجود ۴۰۴ می‌دهد', async () => {
+      await expect(
+        service.changeUserRole('nope', { role: 'driver' }),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('آخرین ادمین را نمی‌توان به نقش دیگری تغییر داد', async () => {
+      prisma._users.set('admin-1', {
+        id: 'admin-1',
+        mobile: '09120000000',
+        fullName: 'مدیر سیستم',
+        email: null,
+        nationalCode: null,
+        passwordHash: '',
+        role: 'admin',
+        isActive: true,
+        deletedAt: null,
+        createdAt: new Date(),
+      });
+
+      await expect(
+        service.changeUserRole('admin-1', { role: 'customer' }),
+      ).rejects.toThrow(BadRequestException);
+
+      // ادمین دوم اجازه می‌دهد اولی تنزل پیدا کند
+      prisma._users.set('admin-2', {
+        ...prisma._users.get('admin-1'),
+        id: 'admin-2',
+        mobile: '09120000009',
+      });
+
+      await expect(
+        service.changeUserRole('admin-1', { role: 'customer' }),
+      ).resolves.toBeDefined();
+    });
+
+    it('تغییر نقش کاربر حذف‌شده ۴۰۴ می‌دهد', async () => {
+      await service.deleteUser('admin-1', USER_ID);
+
+      await expect(
+        service.changeUserRole(USER_ID, { role: 'driver' }),
+      ).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  /**
+   * بلوک یکپارچه‌سازی ممیزی — هر عملیات ادمین باید یک رویداد
+   * با بار دقیق در AuditService ثبت کند.
+   */
+  describe('عملیات ادمین — ثبت ممیزی', () => {
+    const ADMIN_ID = 'admin-1';
+
+    beforeEach(() => {
+      prisma._users.set(ADMIN_ID, {
+        id: ADMIN_ID,
+        mobile: '09120000000',
+        fullName: 'مدیر سیستم',
+        email: null,
+        nationalCode: null,
+        passwordHash: '',
+        role: 'admin',
+        isActive: true,
+        deletedAt: null,
+        createdAt: new Date(),
+      });
+    });
+
+    it('ساخت کاربر، رویداد create با نقش را ثبت می‌کند', async () => {
+      const created = await service.createUser({
+        mobile: '09121112222',
+        fullName: 'کاربر جدید',
+        role: 'manager',
+      });
+
+      expect(audit.log).toHaveBeenCalledTimes(1);
+      const [action, entityType, entityId, before, after] =
+        audit.log.mock.calls[0];
+
+      expect(action).toBe('create');
+      expect(entityType).toBe('user');
+      expect(entityId).toBe(created.id);
+      // کاربر تازه ساخته‌شده وضعیت قبلی ندارد
+      expect(before).toBeNull();
+      expect(after).toMatchObject({
+        id: created.id,
+        fullName: 'کاربر جدید',
+        role: 'manager',
+      });
+    });
+
+    it('ویرایش کاربر، رویداد update با قبل و بعد را ثبت می‌کند', async () => {
+      const before = await service.updateUser(ADMIN_ID, USER_ID, {
+        fullName: 'یوما ویرایش‌شده',
+      });
+
+      expect(audit.log).toHaveBeenCalledTimes(1);
+      const [action, , entityId, beforeSnap, afterSnap] =
+        audit.log.mock.calls[0];
+
+      expect(action).toBe('update');
+      expect(entityId).toBe(USER_ID);
+      // تصویر قبل از تغییر — نام قدیمی
+      expect(beforeSnap?.fullName).toBe('یوما');
+      expect(afterSnap).toMatchObject({
+        id: USER_ID,
+        fullName: 'یوما ویرایش‌شده',
+        role: before.role,
+      });
+    });
+
+    it('soft delete، رویداد delete با قبل و null را ثبت می‌کند', async () => {
+      await service.deleteUser(ADMIN_ID, USER_ID);
+
+      const stored = prisma._users.get(USER_ID);
+      expect(stored?.deletedAt).toBeInstanceOf(Date);
+
+      expect(audit.log).toHaveBeenCalledTimes(1);
+      const [action, , entityId, beforeSnap, afterSnap] =
+        audit.log.mock.calls[0];
+
+      expect(action).toBe('delete');
+      expect(entityId).toBe(USER_ID);
+      expect(beforeSnap).toMatchObject({ id: USER_ID, role: 'customer' });
+      // کاربر حذف‌شده وضعیت بعدی ندارد
+      expect(afterSnap).toBeNull();
+    });
+
+    it('تغییر نقش، رویداد change-role با نقش قبل و بعد را ثبت می‌کند', async () => {
+      await service.changeUserRole(USER_ID, { role: 'driver' });
+
+      expect(audit.log).toHaveBeenCalledTimes(1);
+      const [action, , entityId, before, after] = audit.log.mock.calls[0];
+
+      expect(action).toBe('change-role');
+      expect(entityId).toBe(USER_ID);
+      expect(before).toEqual({ role: 'customer' });
+      expect(after).toEqual({ role: 'driver' });
+    });
+
+    it('حذف حساب خودمان ۴۰۰ می‌دهد و چیزی ثبت نمی‌کند', async () => {
+      await expect(service.deleteUser(ADMIN_ID, ADMIN_ID)).rejects.toThrow(
+        BadRequestException,
+      );
+
+      expect(prisma._users.get(ADMIN_ID)?.deletedAt).toBeNull();
+      // شکست زودهنگام — نباید به ممیزی برسد
+      expect(audit.log).not.toHaveBeenCalled();
+    });
+
+    it('حذف آخرین ادمین ۴۰۰ می‌دهد و چیزی ثبت نمی‌کند', async () => {
+      // ADMIN_ID تنها مدیر فعال سامانه است
+      await expect(service.deleteUser(USER_ID, ADMIN_ID)).rejects.toThrow(
+        BadRequestException,
+      );
+
+      expect(prisma._users.get(ADMIN_ID)?.deletedAt).toBeNull();
+      expect(audit.log).not.toHaveBeenCalled();
+
+      // با افزودن ادمین دوم، حذف اولی مجاز می‌شود
+      prisma._users.set('admin-2', {
+        ...prisma._users.get(ADMIN_ID)!,
+        id: 'admin-2',
+        mobile: '09120000009',
+      });
+
+      await service.deleteUser('admin-2', ADMIN_ID);
+
+      expect(prisma._users.get(ADMIN_ID)?.deletedAt).toBeInstanceOf(Date);
+      expect(audit.log).toHaveBeenCalledTimes(1);
+    });
+
+    it('لیست پرسنل فقط نقش‌های عملیاتی را برمی‌گرداند', async () => {
+      prisma._users.set('driver-1', {
+        id: 'driver-1',
+        mobile: '09120000001',
+        fullName: 'سفیر',
+        email: null,
+        nationalCode: null,
+        passwordHash: '',
+        role: 'driver',
+        isActive: true,
+        deletedAt: null,
+        createdAt: new Date(),
+      });
+      prisma._users.set('manager-1', {
+        id: 'manager-1',
+        mobile: '09120000002',
+        fullName: 'مدیر عملیات',
+        email: null,
+        nationalCode: null,
+        passwordHash: '',
+        role: 'manager',
+        isActive: true,
+        deletedAt: null,
+        createdAt: new Date(),
+      });
+
+      const staff = await service.listStaff();
+
+      const roles = staff.map((u) => u.role);
+      expect(roles).not.toContain('customer');
+      expect(roles).not.toContain('driver');
+      expect(roles).toContain('admin');
+      expect(roles).toContain('manager');
+
+      // فیلدهای مورد نیاز لیست پرسنل در پنل ادمین
+      const manager = staff.find((u) => u.id === 'manager-1');
+      expect(manager).toMatchObject({
+        fullName: 'مدیر عملیات',
+        mobile: '09120000002',
+        email: null,
+        role: 'manager',
+        isActive: true,
+      });
+      expect(manager?.createdAt).toBeInstanceOf(Date);
+    });
+
+    it('تغییر نقش حساب خودمان از مسیر update ۴۰۰ می‌دهد', async () => {
+      await expect(
+        service.updateUser(ADMIN_ID, ADMIN_ID, { role: 'customer' }),
+      ).rejects.toThrow(BadRequestException);
+
+      expect(prisma._users.get(ADMIN_ID)?.role).toBe('admin');
+      expect(audit.log).not.toHaveBeenCalled();
+
+      // ارسال همان نقش فعلی خطا نیست
+      await expect(
+        service.updateUser(ADMIN_ID, ADMIN_ID, { role: 'admin' }),
+      ).resolves.toBeDefined();
     });
   });
 });

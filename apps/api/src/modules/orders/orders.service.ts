@@ -2,15 +2,20 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { randomInt } from 'crypto';
+import type { Request } from 'express';
 import { Prisma } from '@yuma/db';
 import type { OrderFlowStatus } from '@yuma/types';
 import { PrismaService } from '../../database/prisma.service';
 import { S3Service } from '../../shared/storage/s3.service';
 import { faMessages } from '../../common/messages.fa';
 import type { AuthUser } from '../../common/decorators/current-user.decorator';
+import { AuditService } from '../audit-log/audit.service';
+import type { AuditAction } from '../audit-log/audit.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { AdminListOrdersDto } from './dto/admin-list-orders.dto';
 import {
@@ -54,10 +59,14 @@ const ADMIN_ORDER_INCLUDE = {
  */
 @Injectable()
 export class OrdersService {
+  private readonly logger = new Logger(OrdersService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly s3: S3Service,
     private readonly stateMachine: OrderStateMachine,
+    private readonly auditService: AuditService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   /**
@@ -67,7 +76,7 @@ export class OrdersService {
    * `idempotencyKey` تضمین می‌کند ارسال دوبارهٔ یک درخواست،
    * سفارش جدیدی نسازد و همان سفارش قبلی برگردانده شود.
    */
-  async createOrder(actor: AuthUser, dto: CreateOrderDto) {
+  async createOrder(actor: AuthUser, dto: CreateOrderDto, req?: Request) {
     // ۱) idempotency — سفارشِ همین کلید را برمی‌گردانیم تا ثبت تکراری نشود
     const existing = await this.prisma.order.findUnique({
       where: { idempotencyKey: dto.idempotencyKey },
@@ -120,7 +129,7 @@ export class OrdersService {
     const delivery = dto.deliveryAddress;
 
     // ۴) ثبت در یک تراکنش: سفارش + اقلام + تاریخچه + پیش‌فاکتور اولیه
-    return this.prisma.$transaction(async (tx) => {
+    const created = await this.prisma.$transaction(async (tx) => {
       const order = await tx.order.create({
         data: {
           trackingCode,
@@ -172,8 +181,25 @@ export class OrdersService {
         include: { items: true },
       });
 
+      // ثبت رویداد ثبت سفارش در ممیزی — قبل: ندارد (سفارش تازه ساخته شده)
+      await this.auditOrder(req, 'create', order.id, null, order, actor);
+
       return order;
     });
+
+    // بعد از commit، رویداد ثبت سفارش را برای اعلان‌ها منتشر می‌کنیم
+    // (from: null یعنی وضعیت اولیه — قالب order_requested)
+    this.eventEmitter.emit('order.status_changed', {
+      orderId: created.id,
+      trackingCode: created.trackingCode,
+      customerId: created.customerId,
+      from: null,
+      to: 'requested',
+      actorId: actor.id,
+      actorRole: actor.role,
+    });
+
+    return created;
   }
 
   /** لیست سفارشات مشتری — فقط سفارش‌های خودش، مرتب بر اساس جدیدترین */
@@ -237,7 +263,12 @@ export class OrdersService {
    * لغو سفارش توسط مشتری — فقط صاحب سفارش و فقط قبل از تحویل.
    * وضعیت به cancelled تغییر کرده و دلیل لغو در تاریخچه لاگ می‌شود.
    */
-  async cancelOrder(actor: AuthUser, orderId: string, reason: string) {
+  async cancelOrder(
+    actor: AuthUser,
+    orderId: string,
+    reason: string,
+    req?: Request,
+  ) {
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
       select: { customerId: true, status: true },
@@ -272,6 +303,9 @@ export class OrdersService {
         },
       });
 
+      // ثبت رویداد لغو در ممیزی — قبل: ندارد، بعد: دلیل لغو
+      await this.auditOrder(req, 'cancel', orderId, null, { reason }, actor);
+
       return updated;
     });
   }
@@ -297,6 +331,7 @@ export class OrdersService {
     orderId: string,
     toStatus: OrderFlowStatus,
     note?: string,
+    req?: Request,
   ) {
     const order = await this.findOrderOrThrow(orderId, {
       laundryId: true,
@@ -307,7 +342,14 @@ export class OrdersService {
       throw new ForbiddenException(faMessages.order.notAssignedToWorkshop);
     }
 
-    return this.applyTransition(orderId, order.status, toStatus, actor, note);
+    return this.applyTransition(
+      orderId,
+      order.status,
+      toStatus,
+      actor,
+      note,
+      req,
+    );
   }
 
   // ───────────────── سفیر ─────────────────
@@ -331,6 +373,7 @@ export class OrdersService {
     orderId: string,
     toStatus: OrderFlowStatus,
     note?: string,
+    req?: Request,
   ) {
     const order = await this.findOrderOrThrow(orderId, {
       driverId: true,
@@ -341,7 +384,14 @@ export class OrdersService {
       throw new ForbiddenException(faMessages.order.notAssignedToDriver);
     }
 
-    return this.applyTransition(orderId, order.status, toStatus, actor, note);
+    return this.applyTransition(
+      orderId,
+      order.status,
+      toStatus,
+      actor,
+      note,
+      req,
+    );
   }
 
   // ───────────────── ادمین ─────────────────
@@ -396,9 +446,10 @@ export class OrdersService {
     orderId: string,
     toStatus: OrderFlowStatus,
     note?: string,
+    req?: Request,
   ) {
     return this.findOrderOrThrow(orderId, { status: true }).then((order) =>
-      this.applyTransition(orderId, order.status, toStatus, actor, note),
+      this.applyTransition(orderId, order.status, toStatus, actor, note, req),
     );
   }
 
@@ -508,7 +559,12 @@ export class OrdersService {
    * لغو سفارش توسط ادمین — بر خلاف مشتری، از هر وضعیتی به‌جز
    * مراحل پایانی مجاز است و دلیل آن اجباری است.
    */
-  async cancelOrderAdmin(actor: AuthUser, orderId: string, reason: string) {
+  async cancelOrderAdmin(
+    actor: AuthUser,
+    orderId: string,
+    reason: string,
+    req?: Request,
+  ) {
     const order = await this.findOrderOrThrow(orderId, { status: true });
     const status = this.asFlowStatus(order.status);
 
@@ -532,6 +588,9 @@ export class OrdersService {
           actorRole: actor.role,
         },
       });
+
+      // ثبت رویداد لغو در ممیزی — قبل: ندارد، بعد: دلیل لغو
+      await this.auditOrder(req, 'cancel', orderId, null, { reason }, actor);
 
       return updated;
     });
@@ -630,6 +689,7 @@ export class OrdersService {
     to: OrderFlowStatus,
     actor: AuthUser,
     note?: string,
+    req?: Request,
   ) {
     const flowFrom = this.asFlowStatus(from);
     const explicitRule = this.stateMachine.getTransition(flowFrom, to);
@@ -650,7 +710,8 @@ export class OrdersService {
       throw new BadRequestException(faMessages.order.reasonRequired);
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    // ابتدا تراکنش کامیت شود، سپس رویداد اعلان منتشر می‌شود
+    const updated = await this.prisma.$transaction(async (tx) => {
       const updated = await tx.order.update({
         where: { id: orderId },
         data: { status: to },
@@ -667,8 +728,32 @@ export class OrdersService {
         },
       });
 
+      // ثبت رویداد تغییر وضعیت در ممیزی — قبل و بعد وضعیت سفارش
+      await this.auditOrder(
+        req,
+        'status-change',
+        orderId,
+        { status: flowFrom },
+        { status: to },
+        actor,
+      );
+
       return updated;
     });
+
+    // بعد از commit تراکنش، رویداد تغییر وضعیت را برای اعلان‌ها منتشر کن —
+    // ارسال پیامک روی وضعیت سفارش اثر ندارد و شکست آن rollback نمی‌شود
+    this.eventEmitter.emit('order.status_changed', {
+      orderId: updated.id,
+      trackingCode: updated.trackingCode,
+      customerId: updated.customerId,
+      from: flowFrom,
+      to,
+      actorId: actor.id,
+      actorRole: actor.role,
+    });
+
+    return updated;
   }
 
   /**
@@ -700,6 +785,37 @@ export class OrdersService {
     }
 
     return flowStatus;
+  }
+
+  /**
+   * ثبت رویداد سفارش در ممیزی — بازیگر از `actor` و IP/User-Agent
+   * از درخواست استخراج می‌شوند.
+   *
+   * ثبت fire-and-forget است: هر خطایی (حتی شکست خود AuditService)
+   * لاگ می‌شود و هرگز تراکنش/عملیات اصلی را قطع نمی‌کند.
+   */
+  private async auditOrder(
+    req: Request | undefined,
+    action: AuditAction,
+    orderId: string,
+    before: unknown,
+    after: unknown,
+    actor: AuthUser,
+  ): Promise<void> {
+    try {
+      await this.auditService.logFromRequest(
+        req,
+        action,
+        { type: 'order', id: orderId },
+        before,
+        after,
+        { actorId: actor.id, actorRole: actor.role },
+      );
+    } catch (error) {
+      this.logger.warn(
+        `ثبت ممیزی سفارش ناموفق بود (${action} روی ${orderId}): ${String(error)}`,
+      );
+    }
   }
 
   /** ساخت شرط WHERE لیست ادمین از DTO فیلتر */

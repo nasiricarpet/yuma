@@ -61,6 +61,16 @@ export async function apiPost<T>(
   return data;
 }
 
+/** درخواست PUT عمومی */
+export async function apiPut<T>(
+  url: string,
+  body?: unknown,
+  config?: AxiosRequestConfig,
+): Promise<T> {
+  const { data } = await apiClient.put<T>(url, body, config);
+  return data;
+}
+
 /** درخواست PATCH عمومی */
 export async function apiPatch<T>(
   url: string,

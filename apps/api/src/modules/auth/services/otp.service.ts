@@ -5,9 +5,9 @@ import {
   Injectable,
   Logger,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { normalizeMobile } from '@yuma/validators';
 import { RedisService } from '../../../redis/redis.service';
-import { MailService } from '../../../common/mail/mail.service';
 import { faMessages } from '../../../common/messages.fa';
 
 /** اعتبار کد: ۱۰ دقیقه */
@@ -42,7 +42,7 @@ export class OtpService {
 
   constructor(
     private readonly redis: RedisService,
-    private readonly mail: MailService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   /**
@@ -59,8 +59,9 @@ export class OtpService {
     const code = this.generateCode();
     await this.redis.set(`otp:${normalized}`, code, OTP_TTL_SECONDS);
 
-    // ارسال کد (در dev فقط log می‌شود، در prod ایمیل/SMS)
-    await this.mail.sendOtp(`${normalized}@yuma.local`, code);
+    // ارسال کد از طریق رویداد — listener مربوطه پیامک را ارسال می‌کند
+    // (در dev پروایدر mock فقط کد را لاگ می‌کند)
+    this.eventEmitter.emit('otp.requested', { mobile: normalized, code });
 
     if (process.env.NODE_ENV !== 'production') {
       this.logger.warn(`🔑 DEV OTP for ${mobile}: ${code}`);
